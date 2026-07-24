@@ -590,7 +590,7 @@ function App() {
     return stored === "small" || stored === "large" ? stored : "standard";
   });
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
-  const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
+  const [draft, commitDraftState] = useState<Draft>(EMPTY_DRAFT);
   const [detail, setDetail] = useState<QuestionDetail | null>(null);
   const [responseSetDetail, setResponseSetDetail] = useState<ResponseSetDetail | null>(null);
   const [secondaryDetail, setSecondaryDetail] = useState<QuestionDetail | null>(null);
@@ -636,17 +636,22 @@ function App() {
   const conversationSnapshotRef = useRef<string | null>(null);
   const assistantComposingRef = useRef(false);
   const journalCounter = useRef(0);
+  const journalHashes = useRef(new Set<string>());
   const lastFailedAction = useRef<(() => void) | null>(null);
   const semanticSearchSequence = useRef(0);
   const semanticSearchCache = useRef(new Map<string, string[]>());
   const analysisSequence = useRef(0);
   const lastAutomaticAnalysisKey = useRef<string | null>(null);
 
-  useEffect(() => {
-    draftRef.current = draft;
+  function setDraft(update: Draft | ((current: Draft) => Draft)): void {
+    const current = draftRef.current;
+    const next = typeof update === "function" ? update(current) : update;
+    if (next === current) return;
+    draftRef.current = next;
     analysisSequence.current += 1;
     setRunning(false);
-  }, [draft]);
+    commitDraftState(next);
+  }
 
   useEffect(() => {
     document.documentElement.lang = locale === "en" ? "en" : "zh-Hant";
@@ -810,9 +815,7 @@ function App() {
       return;
     }
     const inferred: Grouping = draft.countries.length > 1 && draft.waves.length > 1
-      ? draft.operation === "distribution" || draft.operation === "multi_response"
-        ? "wave"
-        : "country_wave"
+      ? "country_wave"
       : draft.countries.length > 1
         ? "country"
         : draft.waves.length > 1 ? "wave" : "none";
@@ -1074,10 +1077,11 @@ function App() {
     statistic: string,
   ): void {
     const hash = envelope.result.metadata.request_hash;
-    if (journal.some((entry) => entry.envelope.result.metadata.request_hash === hash)) {
+    if (journalHashes.current.has(hash)) {
       setJournalNotice("duplicate");
       return;
     }
+    journalHashes.current.add(hash);
     setJournalNotice(null);
     journalCounter.current += 1;
     setJournal((current) => [
@@ -1143,6 +1147,10 @@ function App() {
       || lastAutomaticAnalysisKey.current === analysisKey
     ) return;
     const timer = window.setTimeout(() => {
+      if (
+        lastAutomaticAnalysisKey.current === analysisKey
+        || analysisRequestKey(draftRef.current) !== analysisKey
+      ) return;
       void runAnalysis(analysisKey);
     }, 220);
     return () => window.clearTimeout(timer);
@@ -2124,18 +2132,40 @@ function ResultChart({ envelope, details, locale }: { envelope: AnalysisEnvelope
     return <div className="chart-wrap" style={{ height: resultChartHeight("bar", data.length) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={data} layout="vertical" margin={{ top: 12, right: 26, bottom: 12, left: 22 }}><CartesianGrid stroke="#E4E0D6" horizontal={false} /><XAxis type="number" domain={domain} /><YAxis type="category" dataKey="context" width={categoryAxisWidth(data.map((item) => item.context))} /><Tooltip formatter={(value) => formatNumber(value, 2, locale)} /><Bar dataKey="value" name={preferred === "mean" ? bi(locale, "Mean", "平均值") : bi(locale, "Median position", "中位位置")} fill="#1F6F9C" maxBarSize={25} /></BarChart></ResponsiveContainer></div>;
   }
   if (result.result_type === "distribution" || result.result_type === "multi_response") {
-    const grouped = new Map<string, Record<string, string | number>>();
-    result.rows.forEach((row) => {
-      const label = String(row.label ?? row.option_label ?? row.raw_value ?? "—");
-      const context = dimensionLabel(row, locale);
-      const item = grouped.get(label) ?? { label };
-      item[context] = Number(row.proportion ?? 0) * 100;
-      grouped.set(label, item);
-    });
-    const data = [...grouped.values()];
+    const distributionData = (rows: ResultRow[], context: (row: ResultRow) => string) => {
+      const grouped = new Map<string, Record<string, string | number>>();
+      rows.forEach((row) => {
+        const label = String(row.label ?? row.option_label ?? row.raw_value ?? "—");
+        const seriesName = context(row);
+        const item = grouped.get(label) ?? { label };
+        item[seriesName] = Number(row.proportion ?? 0) * 100;
+        grouped.set(label, item);
+      });
+      return [...grouped.values()];
+    };
+    const totalsByContext = new Map<string, number>();
+    if (result.result_type === "multi_response") {
+      result.rows.forEach((row) => {
+        const context = dimensionLabel(row, locale);
+        totalsByContext.set(context, (totalsByContext.get(context) ?? 0) + Number(row.proportion ?? 0) * 100);
+      });
+    }
+    const largestTotal = totalsByContext.size ? Math.max(...totalsByContext.values()) : null;
+    const note = largestTotal != null && largestTotal > 100.01
+      ? <div className="chart-note">{bi(locale, `This is a multiple-response question. Respondents may select more than one option, so percentages within a scope can exceed 100% (largest total: ${formatNumber(largestTotal, 2, locale)}%).`, `這是多選題；同一受訪者可選擇多個選項，因此單一範圍內的比例合計可能超過 100%（最高合計 ${formatNumber(largestTotal, 2, locale)}%）。`)}</div>
+      : null;
+    if (draft.grouping === "country_wave") {
+      const countries = [...new Set(result.rows.map((row) => dimensionValue(row, "country")).filter((value): value is string => Boolean(value)))];
+      return <>{note}<div className="distribution-facets">{countries.map((country) => {
+        const rows = result.rows.filter((row) => dimensionValue(row, "country") === country);
+        const series = [...new Set(rows.map((row) => dimensionValue(row, "wave") ?? bi(locale, "Result", "結果")))];
+        const data = distributionData(rows, (row) => dimensionValue(row, "wave") ?? bi(locale, "Result", "結果"));
+        return <section className="distribution-facet" key={country}><header><strong>{country}</strong><span>{bi(locale, "Waves shown separately", "各波次分別呈現")}</span></header><div className="chart-wrap distribution" style={{ height: resultChartHeight("distribution", data.length, series.length) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={data} layout="vertical" margin={{ top: 10, right: 24, bottom: 10, left: 20 }}><CartesianGrid stroke="#E4E0D6" horizontal={false} /><XAxis type="number" domain={[0, 100]} tickFormatter={(value) => `${value}%`} /><YAxis type="category" dataKey="label" width={categoryAxisWidth(data.map((item) => item.label))} interval={0} /><Tooltip formatter={(value) => `${formatNumber(value, 2, locale)}%`} /><Legend />{series.map((name, index) => <Bar key={name} dataKey={name} fill={CHART_COLORS[index % CHART_COLORS.length]} maxBarSize={23} />)}</BarChart></ResponsiveContainer></div></section>;
+      })}</div></>;
+    }
+    const data = distributionData(result.rows, (row) => dimensionLabel(row, locale));
     const series = [...new Set(result.rows.map((row) => dimensionLabel(row, locale)))];
-    const total = result.result_type === "multi_response" ? result.rows.reduce((sum, row) => sum + Number(row.proportion ?? 0), 0) * 100 : null;
-    return <>{total != null && total > 100.01 && <div className="chart-note">{bi(locale, `This is a multiple-response question. Respondents may select more than one option, so percentages can exceed 100% (current total: ${formatNumber(total, 2, locale)}%).`, `這是多選題；同一受訪者可選擇多個選項，因此比例合計可能超過 100%（目前合計 ${formatNumber(total, 2, locale)}%）。`)}</div>}<div className="chart-wrap distribution" style={{ height: resultChartHeight("distribution", data.length, series.length) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={data} layout="vertical" margin={{ top: 10, right: 24, bottom: 10, left: 20 }}><CartesianGrid stroke="#E4E0D6" horizontal={false} /><XAxis type="number" domain={[0, 100]} tickFormatter={(value) => `${value}%`} /><YAxis type="category" dataKey="label" width={categoryAxisWidth(data.map((item) => item.label))} interval={0} /><Tooltip formatter={(value) => `${formatNumber(value, 2, locale)}%`} /><Legend />{series.map((name, index) => <Bar key={name} dataKey={name} fill={CHART_COLORS[index % CHART_COLORS.length]} maxBarSize={23} />)}</BarChart></ResponsiveContainer></div></>;
+    return <>{note}<div className="chart-wrap distribution" style={{ height: resultChartHeight("distribution", data.length, series.length) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={data} layout="vertical" margin={{ top: 10, right: 24, bottom: 10, left: 20 }}><CartesianGrid stroke="#E4E0D6" horizontal={false} /><XAxis type="number" domain={[0, 100]} tickFormatter={(value) => `${value}%`} /><YAxis type="category" dataKey="label" width={categoryAxisWidth(data.map((item) => item.label))} interval={0} /><Tooltip formatter={(value) => `${formatNumber(value, 2, locale)}%`} /><Legend />{series.map((name, index) => <Bar key={name} dataKey={name} fill={CHART_COLORS[index % CHART_COLORS.length]} maxBarSize={23} />)}</BarChart></ResponsiveContainer></div></>;
   }
   if (result.result_type === "crosstab") return <CrosstabMatrix envelope={envelope} details={details} locale={locale} />;
   if (result.result_type === "relationship") {
