@@ -1,6 +1,7 @@
 import type { AssistantStatus, Question } from "./types";
 
 interface LocalRerankResponse {
+  provider: "direct_ollama" | "deepseek";
   model: string;
   confidence: "high" | "medium" | "low";
   candidate_ids: string[];
@@ -8,11 +9,21 @@ interface LocalRerankResponse {
 }
 
 const STATUS_TIMEOUT_MS = 2_000;
-const RERANK_TIMEOUT_MS = 12_000;
+const RERANK_TIMEOUT_MS = 20_000;
 const RERANK_CANDIDATE_LIMIT = 20;
 const RERANK_CACHE_LIMIT = 128;
 const rerankCache = new Map<string, string[]>();
-let availabilityPromise: Promise<boolean> | null = null;
+interface RerankerStatus {
+  available: boolean;
+  provider: "direct_ollama" | "deepseek";
+  model: "gemma4:26b-mlx" | "deepseek-v4-flash";
+}
+
+let statusCache: { value: RerankerStatus | null; expiresAt: number } = {
+  value: null,
+  expiresAt: 0,
+};
+let availabilityPromise: Promise<RerankerStatus | null> | null = null;
 
 function canCallLocalRoute(): boolean {
   return typeof window !== "undefined" && typeof window.fetch === "function";
@@ -32,28 +43,45 @@ async function fetchWithTimeout(
   }
 }
 
-async function detectLocalReranker(): Promise<boolean> {
-  if (!canCallLocalRoute()) return false;
+async function detectReranker(): Promise<RerankerStatus | null> {
+  if (!canCallLocalRoute()) return null;
+  if (Date.now() < statusCache.expiresAt) return statusCache.value;
   if (!availabilityPromise) {
     availabilityPromise = fetchWithTimeout(
-      "/api/local-rerank",
+      "/api/question-rerank",
       { headers: { Accept: "application/json" } },
       STATUS_TIMEOUT_MS,
     )
-      .then((response) => response.ok)
-      .catch(() => false);
+      .then(async (response) => {
+        if (!response.ok) return null;
+        const document = (await response.json()) as Partial<RerankerStatus>;
+        if (
+          document.available !== true
+          || !["direct_ollama", "deepseek"].includes(String(document.provider))
+          || !["gemma4:26b-mlx", "deepseek-v4-flash"].includes(String(document.model))
+        ) return null;
+        return document as RerankerStatus;
+      })
+      .catch(() => null)
+      .then((value) => {
+        statusCache = { value, expiresAt: Date.now() + 30_000 };
+        availabilityPromise = null;
+        return value;
+      });
   }
   return availabilityPromise;
 }
 
 export async function localAssistantStatus(): Promise<AssistantStatus> {
-  const available = await detectLocalReranker();
-  return available
+  const status = await detectReranker();
+  return status
     ? {
-        provider: "direct_ollama",
+        provider: status.provider,
         available: true,
-        label: "Local model and verified statistics",
-        detail: "gemma4:26b-mlx reranks grounded question candidates",
+        label: status.provider === "direct_ollama"
+          ? "Local model and verified statistics"
+          : "Cloud model and verified statistics",
+        detail: `${status.model} reranks grounded question candidates`,
       }
     : {
         provider: "offline",
@@ -108,7 +136,7 @@ export async function maybeRerankQuestions(
   if (
     questions.length < 2
     || /\bq\d+(?:\.\d+)?\b/iu.test(query)
-    || !(await detectLocalReranker())
+    || !(await detectReranker())
   ) {
     return questions;
   }
@@ -120,7 +148,7 @@ export async function maybeRerankQuestions(
   if (cached) return applyRerankOrder(questions, cached);
   try {
     const response = await fetchWithTimeout(
-      "/api/local-rerank",
+      "/api/question-rerank",
       {
         method: "POST",
         headers: {
@@ -144,7 +172,10 @@ export async function maybeRerankQuestions(
     if (!response.ok) return questions;
     const document = (await response.json()) as Partial<LocalRerankResponse>;
     if (
-      document.model !== "gemma4:26b-mlx"
+      !(
+        (document.provider === "direct_ollama" && document.model === "gemma4:26b-mlx")
+        || (document.provider === "deepseek" && document.model === "deepseek-v4-flash")
+      )
       || document.confidence !== "high"
       || !Array.isArray(document.candidate_ids)
       || !document.candidate_ids.length

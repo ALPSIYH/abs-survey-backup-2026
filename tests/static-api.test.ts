@@ -32,7 +32,7 @@ const {
   applyRerankOrder,
   maybeRerankQuestions,
   rerankRespectsExplicitRoles,
-} = await import("../app/local-rerank");
+} = await import("../app/question-rerank");
 
 function draft(
   overrides: Partial<Parameters<typeof api.analyze>[0]> = {},
@@ -117,6 +117,16 @@ test("catalog search returns a ranked complete candidate pool", async () => {
   );
   assert.ok(["q177", "q178"].includes(chinaInfluence.questions[0]?.variable_id));
   assert.equal(chinaInfluence.questions[0]?.match_band, "high");
+  assert.equal(
+    (await api.catalogSearch("美国对我们国家的影响总体是好还是坏"))
+      .questions[0]?.variable_id,
+    "q180",
+  );
+  assert.equal(
+    (await api.catalogSearch("日本人认为中国对本国有多大影响"))
+      .questions[0]?.variable_id,
+    "q177",
+  );
 });
 
 test("local rerank output can only reorder grounded candidates", async () => {
@@ -137,14 +147,19 @@ test("local rerank only overrides the baseline at high confidence", async () => 
   const candidates = ["q91", "q96"]
     .map((id) => data.questions.find((question) => question.variable_id === id))
     .filter((question): question is NonNullable<typeof question> => Boolean(question));
-  let responseMode: "high" | "medium" | "invalid" = "high";
+  let responseMode: "high" | "medium" | "deepseek" | "invalid" = "high";
   const fakeWindow = {
     fetch: async (_input: string, init?: RequestInit) => {
       if (!init?.method) {
-        return Response.json({ available: true, model: "gemma4:26b-mlx" });
+        return Response.json({
+          available: true,
+          provider: "direct_ollama",
+          model: "gemma4:26b-mlx",
+        });
       }
       if (responseMode === "high") {
         return Response.json({
+          provider: "direct_ollama",
           model: "gemma4:26b-mlx",
           confidence: "high",
           candidate_ids: ["q96"],
@@ -153,13 +168,24 @@ test("local rerank only overrides the baseline at high confidence", async () => 
       }
       if (responseMode === "medium") {
         return Response.json({
+          provider: "direct_ollama",
           model: "gemma4:26b-mlx",
           confidence: "medium",
           candidate_ids: ["q96"],
           elapsed_ms: 50,
         });
       }
+      if (responseMode === "deepseek") {
+        return Response.json({
+          provider: "deepseek",
+          model: "deepseek-v4-flash",
+          confidence: "high",
+          candidate_ids: ["q96"],
+          elapsed_ms: 50,
+        });
+      }
       return Response.json({
+        provider: "direct_ollama",
         model: "gemma4:26b-mlx",
         confidence: "high",
         candidate_ids: ["q999"],
@@ -193,6 +219,13 @@ test("local rerank only overrides the baseline at high confidence", async () => 
         (question) => question.variable_id,
       ),
       ["q91", "q96"],
+    );
+    responseMode = "deepseek";
+    assert.deepEqual(
+      (await maybeRerankQuestions("deepseek fallback test", candidates)).map(
+        (question) => question.variable_id,
+      ),
+      ["q96", "q91"],
     );
   } finally {
     Reflect.deleteProperty(globalThis, "window");

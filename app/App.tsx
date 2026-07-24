@@ -1793,7 +1793,9 @@ function App() {
           <div><Bot size={19} /><span><strong>{bi(locale, "Analysis assistant", "分析助理")}</strong><small>{bootstrap.assistant.available
             ? bootstrap.assistant.provider === "direct_ollama"
               ? bi(locale, "Local model and verified statistics connected", "本機模型與統計已連線")
-              : bi(locale, "Cloud catalog and statistics connected", "雲端題庫與統計已連線")
+              : bootstrap.assistant.provider === "deepseek"
+                ? bi(locale, "Cloud model and verified statistics connected", "雲端模型與統計已連線")
+                : bi(locale, "Cloud catalog and statistics connected", "雲端題庫與統計已連線")
             : bi(locale, "Manual analysis remains available", "仍可使用手動分析")}</small></span></div>
           <div className="assistant-actions">
             <i className={bootstrap.assistant.available ? "online" : "offline"} />

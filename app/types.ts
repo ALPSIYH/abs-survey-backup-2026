@@ -67,7 +67,7 @@ export interface ResponseSetDetail extends ResponseSet {
 }
 
 export interface AssistantStatus {
-  provider: "offline" | "local" | "direct_ollama" | "bridge";
+  provider: "offline" | "local" | "direct_ollama" | "deepseek" | "bridge";
   available: boolean;
   label: string;
   detail: string;

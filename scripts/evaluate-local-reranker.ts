@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { catalogMatch } from "../app/api";
-import { rerankRespectsExplicitRoles } from "../app/local-rerank";
+import { rerankRespectsExplicitRoles } from "../app/question-rerank";
 import type { Question } from "../app/types";
 
 interface CatalogQuestion {
@@ -276,7 +276,7 @@ for (const item of cases) {
   const baselineScore = baselineRanking[0]?.score ?? 0;
   const baselineMargin = baselineScore - (baselineRanking[1]?.score ?? 0);
   const started = performance.now();
-  const response = await fetch(`${baseUrl}/api/local-rerank`, {
+  const response = await fetch(`${baseUrl}/api/question-rerank`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

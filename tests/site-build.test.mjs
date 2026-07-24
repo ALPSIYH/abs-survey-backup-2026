@@ -39,12 +39,12 @@ test("server-renders the finished survey explorer", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|SkeletonPreview/);
 });
 
-test("public deployment cannot invoke the local model route", async () => {
+test("public deployment cannot invoke a model without a configured server secret", async () => {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("local-route-test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
   const response = await worker.fetch(
-    new Request("https://survey.example/api/local-rerank", {
+    new Request("https://survey.example/api/question-rerank", {
       headers: {
         accept: "application/json",
         host: "survey.example",

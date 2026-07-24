@@ -28,7 +28,7 @@ import type {
   ResultRow,
   StatisticalView,
 } from "./types";
-import { localAssistantStatus, maybeRerankQuestions } from "./local-rerank";
+import { localAssistantStatus, maybeRerankQuestions } from "./question-rerank";
 
 interface StaticResponseSetCatalog {
   id: string;
@@ -165,6 +165,16 @@ const QUESTION_MEASURE_INTENTS: Array<{
     query: /(?:民主.*(?:最好|最佳|支持)|best\s+form\s+of\s+government|support\s+for\s+democracy)/iu,
     question: /best\s+form\s+of\s+government/iu,
     boost: 700,
+  },
+  {
+    query: /(?:how\s+much\s+influence|influence\s+(?:amount|degree|level)|影響(?:有)?多大|影响(?:有)?多大|影響程度|影响程度)/iu,
+    question: /how\s+much\s+influence/iu,
+    boost: 900,
+  },
+  {
+    query: /(?:influence.*(?:positive|negative|good|bad)|(?:positive|negative|good|bad).*influence|影響.*(?:正面|負面|负面|好|壞|坏)|影响.*(?:正面|負面|负面|好|壞|坏))/iu,
+    question: /general(?:ly)?\s+speaking.*influence.*(?:is|\?)/iu,
+    boost: 900,
   },
 ];
 
