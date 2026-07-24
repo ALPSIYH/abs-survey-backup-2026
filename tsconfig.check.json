@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "incremental": false,
+    "noEmit": true
+  },
+  "include": ["app/**/*.ts", "app/**/*.tsx"],
+  "exclude": [
+    "app/chatgpt-auth.ts",
+    "node_modules",
+    "node_modules.node20",
+    "db",
+    "worker"
+  ]
+}

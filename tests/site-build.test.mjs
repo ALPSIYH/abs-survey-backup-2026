@@ -40,10 +40,11 @@ test("server-renders the finished survey explorer", async () => {
 });
 
 test("packages the complete aggregate-only cloud dataset", async () => {
-  const [catalogText, manifestText, questionFiles] = await Promise.all([
+  const [catalogText, manifestText, questionFiles, responseSetFiles] = await Promise.all([
     readFile(new URL("../public/data/catalog.json", import.meta.url), "utf8"),
     readFile(new URL("../public/data/manifest.json", import.meta.url), "utf8"),
     readdir(new URL("../public/data/questions/", import.meta.url)),
+    readdir(new URL("../public/data/response-sets/", import.meta.url)),
   ]);
   const catalog = JSON.parse(catalogText);
   const manifest = JSON.parse(manifestText);
@@ -52,8 +53,11 @@ test("packages the complete aggregate-only cloud dataset", async () => {
   assert.equal(catalog.dataset.dataMode, "aggregate-only");
   assert.equal(catalog.questions.length, 199);
   assert.equal(catalog.countries.length, 18);
+  assert.equal(catalog.responseSets.length, 2);
   assert.equal(questionFiles.filter((name) => name.endsWith(".json")).length, 199);
+  assert.equal(responseSetFiles.filter((name) => name.endsWith(".json")).length, 2);
   assert.equal(manifest.questionFiles, 199);
+  assert.equal(manifest.responseSetFiles, 2);
   assert.equal(manifest.aggregateCells, 85_807);
 
   const q95 = JSON.parse(
@@ -62,6 +66,19 @@ test("packages the complete aggregate-only cloud dataset", async () => {
   assert.equal(q95.id, "q95");
   assert.ok(q95.scale.length >= 4);
   assert.ok(q95.cells.length > 100);
+
+  const membership = JSON.parse(
+    await readFile(
+      new URL(
+        "../public/data/response-sets/organization_membership.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(membership.members.length, 3);
+  assert.ok(membership.options.length > 10);
+  assert.ok(membership.scopes.any.rows.length > 100);
 });
 
 test("does not expose respondent-level source files", async () => {

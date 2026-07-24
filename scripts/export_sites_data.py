@@ -48,6 +48,11 @@ TOPICS = (
     ("international_relations", "International relations and regional influence", "國際關係與區域影響", 172, 182),
 )
 
+RESPONSE_SET_LABELS = {
+    "important_national_problems": "Important national problems (up to three answers)",
+    "organization_membership": "Organization membership (up to three answers)",
+}
+
 
 def topic_for(variable_id: str) -> str:
     number = int(variable_id.removeprefix("q").split(".", 1)[0])
@@ -115,6 +120,7 @@ def export(database: Path, output: Path) -> None:
         waves_by_question[str(variable_id)].append(int(wave))
 
     questions: list[dict[str, object]] = []
+    response_set_members: dict[str, list[dict[str, object]]] = defaultdict(list)
     topic_counts: Counter[str] = Counter()
     for row in question_rows:
         variable_id = str(row[0])
@@ -142,6 +148,14 @@ def export(database: Path, output: Path) -> None:
                 "waves": waves_by_question[variable_id],
             }
         )
+        if row[4] is not None:
+            response_set_members[str(row[4])].append(
+                {
+                    "variableId": variable_id,
+                    "memberOrder": int(row[5]),
+                    "questionText": str(row[2]),
+                }
+            )
 
     topics = [
         {
@@ -152,6 +166,19 @@ def export(database: Path, output: Path) -> None:
         }
         for topic_id, label_en, label_zh, _, _ in TOPICS
         if topic_counts[topic_id]
+    ]
+    topic_by_id = {str(question["id"]): str(question["topicId"]) for question in questions}
+    response_sets = [
+        {
+            "id": response_set_id,
+            "label": RESPONSE_SET_LABELS.get(
+                response_set_id,
+                response_set_id.replace("_", " ").title(),
+            ),
+            "memberCount": len(members),
+            "topicId": topic_by_id[str(members[0]["variableId"])],
+        }
+        for response_set_id, members in sorted(response_set_members.items())
     ]
 
     scales: dict[str, list[list[object]]] = defaultdict(list)
@@ -221,6 +248,7 @@ def export(database: Path, output: Path) -> None:
             "waves": [1, 2, 3, 4, 5, 6],
             "topics": topics,
             "questions": questions,
+            "responseSets": response_sets,
         },
     )
 
@@ -236,10 +264,101 @@ def export(database: Path, output: Path) -> None:
             },
         )
 
+    response_set_dir = output / "response-sets"
+    for response_set in response_sets:
+        response_set_id = str(response_set["id"])
+        members = sorted(
+            response_set_members[response_set_id],
+            key=lambda member: int(member["memberOrder"]),
+        )
+        member_ids = [str(member["variableId"]) for member in members]
+        option_rows = connection.execute(
+            """
+            SELECT raw_value, option_label, display_order
+            FROM semantic.response_set_options
+            WHERE response_set_id = ?
+            ORDER BY display_order
+            """,
+            [response_set_id],
+        ).fetchall()
+        options = [
+            [clean_number(raw_value), str(label), int(display_order)]
+            for raw_value, label, display_order in option_rows
+        ]
+        allowed = {float(raw_value) for raw_value, _, _ in option_rows}
+        raw_rows = connection.execute(
+            f"""
+            SELECT
+                CAST(country AS INTEGER),
+                CAST(wave AS INTEGER),
+                {", ".join(f'"{member_id}"' for member_id in member_ids)}
+            FROM source.responses
+            ORDER BY country, wave
+            """
+        ).fetchall()
+        scope_bases: dict[str, Counter[tuple[int, int]]] = defaultdict(Counter)
+        scope_counts: dict[
+            str,
+            Counter[tuple[int, int, float]],
+        ] = defaultdict(Counter)
+        for raw_row in raw_rows:
+            country_code = int(raw_row[0])
+            wave = int(raw_row[1])
+            values = [
+                None if value is None else float(value)
+                for value in raw_row[2:]
+            ]
+            valid_values = [value for value in values if value in allowed]
+            if valid_values:
+                context = (country_code, wave)
+                scope_bases["any"][context] += 1
+                for raw_value in set(valid_values):
+                    scope_counts["any"][(country_code, wave, raw_value)] += 1
+            for member, value in zip(members, values, strict=True):
+                if value not in allowed:
+                    continue
+                scope = str(member["memberOrder"])
+                context = (country_code, wave)
+                scope_bases[scope][context] += 1
+                scope_counts[scope][(country_code, wave, value)] += 1
+
+        scopes: dict[str, object] = {}
+        for scope in ["any", *[str(member["memberOrder"]) for member in members]]:
+            bases = scope_bases[scope]
+            counts = scope_counts[scope]
+            scopes[scope] = {
+                "contexts": [
+                    [country_code, wave, int(base_n)]
+                    for (country_code, wave), base_n in sorted(bases.items())
+                ],
+                "rows": [
+                    [
+                        country_code,
+                        wave,
+                        clean_number(raw_value),
+                        int(bases[(country_code, wave)]),
+                        int(count),
+                    ]
+                    for (country_code, wave, raw_value), count in sorted(counts.items())
+                ],
+            }
+        write_json(
+            response_set_dir / f"{response_set_id}.json",
+            {
+                "id": response_set_id,
+                "label": response_set["label"],
+                "topicId": response_set["topicId"],
+                "members": members,
+                "options": options,
+                "scopes": scopes,
+            },
+        )
+
     write_json(
         output / "manifest.json",
         {
             "questionFiles": len(questions),
+            "responseSetFiles": len(response_sets),
             "aggregateCells": sum(len(rows) for rows in cells.values()),
             "generatedAt": datetime.now(UTC).isoformat(),
         },

@@ -1,5 +1,5 @@
-import SurveyExplorer from "./SurveyExplorer";
+import App from "./App";
 
 export default function Home() {
-  return <SurveyExplorer />;
+  return <App />;
 }
