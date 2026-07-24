@@ -344,6 +344,10 @@ const STATIC_ASSISTANT_ENGLISH: Record<string, string> = {
     "There is no analysis change to undo.",
   "結果已顯示於分析區": "The result is shown in the analysis area",
   "請先選擇題目。": "Choose a survey question before continuing.",
+  "已記錄這項分析條件；請繼續選擇最符合需求的調查題目。":
+    "This analysis condition was recorded. Continue by selecting the survey question that best matches your request.",
+  "已記錄國家、波次或統計條件；請再說明要分析的調查主題或題目。":
+    "The country, wave, or statistic condition was recorded. Now describe the survey topic or question to analyze.",
   "不客氣。你可以繼續調整統計量、國家、波次，或提出新的調查主題。":
     "You are welcome. Continue with a new statistic, country, wave, or survey topic whenever you are ready.",
 };
@@ -505,6 +509,13 @@ export function localizeAssistantMessage(locale: Locale, text: string): string {
     const subject = providerSafe.slice("已找到 ".length, -countryMarker.length);
     const punctuation = /[.?!。？！]$/u.test(subject.trim()) ? "" : ".";
     return `Found ${subject}${punctuation} Select the respondents' country or region.`;
+  }
+
+  const incompatibleStatistic = providerSafe.match(
+    /^(\S+)\s+沒有可用的(.+?)設定，因此不能直接計算。以下題目支援(.+?)，請選擇最符合原意者：$/u,
+  );
+  if (incompatibleStatistic) {
+    return `${incompatibleStatistic[1]} does not have a usable ${englishStatistic(incompatibleStatistic[2])} definition, so it cannot be calculated directly. The following questions support ${englishStatistic(incompatibleStatistic[3])}; select the one that best matches your original intent:`;
   }
 
   const wave = providerSafe.match(

@@ -270,3 +270,227 @@ test("assistant does not silently calculate means for category-only questions", 
     "response distribution",
   );
 });
+
+test("assistant ranks the requested measure and statistic above broad topic matches", async () => {
+  const prompts = [
+    "日本的民主程度在各波平均值",
+    "日本的民主化程度，各波平均數",
+    "日本人覺得自己的國家有多民主，各波平均",
+    "mean democracy rating in Japan across waves",
+    "How democratic is Japan on average in every wave?",
+    "democracy rating Japan mean by wave",
+  ];
+  for (const prompt of prompts) {
+    const conversation = await api.createConversation();
+    const response = await api.sendConversationMessage(
+      conversation.conversation_id,
+      prompt,
+      conversation.revision,
+    );
+    assert.equal(response.pending?.kind, "question", prompt);
+    assert.equal(response.options[0]?.value, "q96", prompt);
+    assert.equal(
+      response.options.some((option) => option.value === "q91"),
+      false,
+      prompt,
+    );
+  }
+});
+
+test("assistant recognizes multilingual all-country and all-wave scope expressions", async () => {
+  const countryAliases = [
+    "所有國家",
+    "全部国家",
+    "全地區",
+    "各國",
+    "all countries",
+    "every country",
+    "every region",
+    "all respondent regions",
+  ];
+  for (const alias of countryAliases) {
+    const conversation = await api.createConversation();
+    const response = await api.sendConversationMessage(
+      conversation.conversation_id,
+      `q95 ${alias} mean W2`,
+      conversation.revision,
+    );
+    assert.equal(response.status, "answered", alias);
+    assert.equal(response.active_snapshot?.draft.countries.length, 18, alias);
+  }
+
+  const waveAliases = [
+    "所有波次",
+    "全部可用波次",
+    "each wave",
+    "every available wave",
+    "multiple waves",
+  ];
+  for (const alias of waveAliases) {
+    const conversation = await api.createConversation();
+    const response = await api.sendConversationMessage(
+      conversation.conversation_id,
+      `q95 Japan mean ${alias}`,
+      conversation.revision,
+    );
+    assert.equal(response.status, "answered", alias);
+    assert.deepEqual(response.active_snapshot?.draft.waves, [1, 2, 3, 4, 5, 6], alias);
+  }
+});
+
+test("assistant preserves question choices when scope is supplied during clarification", async () => {
+  const conversation = await api.createConversation();
+  const candidates = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "民主滿意度",
+    conversation.revision,
+  );
+  assert.equal(candidates.pending?.kind, "question");
+  const valuesBefore = candidates.options.map((option) => option.value);
+
+  const scoped = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "所有國家",
+    candidates.revision,
+  );
+  assert.equal(scoped.pending?.kind, "question");
+  assert.deepEqual(
+    scoped.options.map((option) => option.value),
+    valuesBefore,
+  );
+  assert.match(scoped.message, /已記錄這項分析條件/u);
+});
+
+test("assistant treats a semantic topic with scope words as a new question", async () => {
+  const conversation = await api.createConversation();
+  const initial = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "q1 Japan mean all waves",
+    conversation.revision,
+  );
+  assert.equal(initial.status, "answered");
+
+  const switched = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "日本的民主程度在各波平均值",
+    initial.revision,
+  );
+  assert.equal(switched.pending?.kind, "question");
+  assert.equal(switched.options[0]?.value, "q96");
+});
+
+test("assistant offers compatible questions when a selected item cannot use the requested statistic", async () => {
+  const conversation = await api.createConversation();
+  const candidates = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "日本的民主程度在各波",
+    conversation.revision,
+  );
+  const q91 = candidates.options.find((option) => option.value === "q91");
+  assert.ok(q91);
+
+  const selected = await api.sendConversationCommand(
+    conversation.conversation_id,
+    {
+      kind: "select_pending_option",
+      pending_id: candidates.pending!.pending_id,
+      option_id: q91.option_id,
+    },
+    candidates.revision,
+    "q91",
+  );
+  const distribution = selected.options.find(
+    (option) => option.value === "distribution",
+  );
+  assert.ok(distribution);
+  const analyzed = await api.sendConversationCommand(
+    conversation.conversation_id,
+    {
+      kind: "select_pending_option",
+      pending_id: selected.pending!.pending_id,
+      option_id: distribution.option_id,
+    },
+    selected.revision,
+    "回答分布",
+  );
+  assert.equal(analyzed.status, "answered");
+
+  const revised = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "改看平均分",
+    analyzed.revision,
+  );
+  assert.equal(revised.pending?.kind, "question");
+  assert.equal(revised.options[0]?.value, "q96");
+  assert.match(revised.message, /q91 沒有可用的平均分設定/u);
+  assert.match(
+    localizeAssistantMessage("en", revised.message),
+    /does not have a usable mean score definition/i,
+  );
+});
+
+test("assistant expands compact wave ranges", async () => {
+  const conversation = await api.createConversation();
+  const response = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "q95 Japan mean W2-W4",
+    conversation.revision,
+  );
+  assert.equal(response.status, "answered");
+  assert.deepEqual(response.active_snapshot?.draft.waves, [2, 3, 4]);
+});
+
+test("assistant understands relative wave quantities in Chinese and English", async () => {
+  const cases: Array<[string, number[]]> = [
+    ["q95 Japan mean 前三波", [1, 2, 3]],
+    ["q95 Japan mean 最近兩波", [5, 6]],
+    ["q95 Japan mean first three waves", [1, 2, 3]],
+    ["q95 Japan mean latest two waves", [5, 6]],
+  ];
+  for (const [prompt, expected] of cases) {
+    const conversation = await api.createConversation();
+    const response = await api.sendConversationMessage(
+      conversation.conversation_id,
+      prompt,
+      conversation.revision,
+    );
+    assert.equal(response.status, "answered", prompt);
+    assert.deepEqual(response.active_snapshot?.draft.waves, expected, prompt);
+  }
+});
+
+test("assistant treats English switch-to phrases as scope changes", async () => {
+  const conversation = await api.createConversation();
+  const initial = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "q95 Japan mean W2",
+    conversation.revision,
+  );
+  const countries = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "switch to every country",
+    initial.revision,
+  );
+  assert.equal(countries.status, "answered");
+  assert.equal(countries.active_snapshot?.draft.countries.length, 18);
+
+  const waves = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "switch to across waves",
+    countries.revision,
+  );
+  assert.equal(waves.status, "answered");
+  assert.deepEqual(waves.active_snapshot?.draft.waves, [1, 2, 3, 4, 5, 6]);
+});
+
+test("assistant rejects explicit United States respondent wording", async () => {
+  for (const prompt of ["美國受訪者", "我要看美國的受訪者資料"]) {
+    const conversation = await api.createConversation();
+    const response = await api.sendConversationMessage(
+      conversation.conversation_id,
+      prompt,
+      conversation.revision,
+    );
+    assert.equal(response.status, "unsupported", prompt);
+  }
+});

@@ -2339,7 +2339,7 @@ function scoreDomain(detail: QuestionDetail | null, mode: Mode | null): [number,
 }
 
 function categoryAxisWidth(labels: unknown[]): number {
-  const longest = labels.reduce(
+  const longest = labels.reduce<number>(
     (length, label) => Math.max(length, String(label ?? "").length),
     0,
   );

@@ -83,6 +83,7 @@ interface ConversationState {
   revision: number;
   turns: ConversationTurn[];
   plan: ConversationPlan;
+  questionQuery: string | null;
   pending: ConversationResponse["pending"];
   options: ConversationOption[];
   activeSnapshot: ConversationSnapshot | null;
@@ -98,6 +99,10 @@ let catalogPromise: Promise<CloudCatalog> | null = null;
 let sequence = 0;
 
 const QUERY_ALIASES: Record<string, string> = {
+  民主程度: "how much democracy democracy level rating",
+  民主化程度: "how democratic democracy level rating",
+  民主滿意度: "satisfied democracy works satisfaction",
+  民主满意度: "satisfied democracy works satisfaction",
   民主: "democracy democratic",
   滿意: "satisfied satisfaction",
   满意: "satisfied satisfaction",
@@ -134,6 +139,48 @@ const QUERY_ALIASES: Record<string, string> = {
   貧富: "income inequality rich poor",
   贫富: "income inequality rich poor",
 };
+
+const QUESTION_MEASURE_INTENTS: Array<{
+  query: RegExp;
+  question: RegExp;
+  boost: number;
+}> = [
+  {
+    query: /(?:民主(?:化)?(?:的)?(?:程度|水平|評分|评分)|有多(?:麼|么)?民主|多(?:麼|么)民主|how\s+(?:much\s+of\s+a\s+)?democracy|how\s+democratic|democracy\s+(?:level|rating|score))/iu,
+    question: /(?:how\s+much\s+of\s+a\s+democracy|how\s+democratic)/iu,
+    boost: 900,
+  },
+  {
+    query: /(?:民主.*(?:滿意|满意)|(?:satisfied|satisfaction).*(?:democracy|democratic)|democracy.*(?:satisfied|satisfaction))/iu,
+    question: /(?:satisfied|dissatisfied).*(?:democracy|democratic)|democracy\s+works/iu,
+    boost: 900,
+  },
+  {
+    query: /(?:民主.*(?:意義|意义|含義|含义)|meaning\s+of\s+democracy)/iu,
+    question: /meaning\s+of\s+democracy/iu,
+    boost: 900,
+  },
+  {
+    query: /(?:民主.*(?:最好|最佳|支持)|best\s+form\s+of\s+government|support\s+for\s+democracy)/iu,
+    question: /best\s+form\s+of\s+government/iu,
+    boost: 700,
+  },
+];
+
+const ALL_COUNTRIES_PATTERN =
+  /(?:\b(?:all|every|each)\s+(?:available\s+)?(?:(?:surveyed|survey|respondent)\s+)?(?:countries|country|territories|territory|regions|region|places|place)\b|(?:all|every|each)\s*(?:國家|国家|地區|地区)|(?:全部|所有|全體|全体|全|每個|每个|每一個|每一个)(?:的)?(?:國家|国家|地區|地区|受訪地區|受访地区)|(?:各國|各国|各個國家|各个国家|各地區|各地区))/iu;
+
+const ALL_WAVES_PATTERN =
+  /(?:\b(?:all|every|each|multiple)\s+(?:available\s+)?(?:survey\s+)?waves?\b|\bacross\s+(?:all\s+)?waves?\b|\b(?:by|per)\s+waves?\b|\bwave\s+by\s+wave\b|\bover\s+time\b|\btrend\b|(?:all|every|each)\s*(?:波次|波)|(?:全部|所有|每個|每个|每一個|每一个|各個|各个|多個|多个)(?:可用)?(?:調查|调查)?(?:波次|波)|(?:各波|歷次|历次|各次調查|各次调查|趨勢|趋势))/iu;
+
+const FIRST_THREE_WAVES_PATTERN =
+  /(?:\bfirst\s+(?:three|3)\s+(?:survey\s+)?waves?\b|(?:前|最早)(?:三|3)(?:個|个)?(?:調查|调查)?(?:波次|波))/iu;
+
+const LATEST_TWO_WAVES_PATTERN =
+  /(?:\b(?:latest|last|most recent)\s+(?:two|2)\s+(?:survey\s+)?waves?\b|(?:最近|最新|最後|最后)(?:兩|两|2)(?:個|个)?(?:調查|调查)?(?:波次|波))/iu;
+
+const LATEST_THREE_WAVES_PATTERN =
+  /(?:\b(?:latest|last|most recent)\s+(?:three|3)\s+(?:survey\s+)?waves?\b|(?:最近|最新|最後|最后)(?:三|3)(?:個|个)?(?:調查|调查)?(?:波次|波))/iu;
 
 const COUNTRY_ALIASES: Array<[number, RegExp]> = [
   [1, /(?:\bjapan(?:ese)?\b|日本(?:人|民眾|民众)?)/iu],
@@ -737,15 +784,20 @@ function normalizeQuery(query: string): string {
   for (const [source, target] of Object.entries(QUERY_ALIASES)) {
     if (expanded.includes(source)) expanded += ` ${target}`;
   }
+  for (const [, pattern] of COUNTRY_ALIASES) {
+    const flags = [...new Set(`${pattern.flags}g`.split(""))].join("");
+    expanded = expanded.replace(new RegExp(pattern.source, flags), " ");
+  }
   return expanded
     .replace(
       /\b(?:mean|average|distribution|median|quartiles?|standard deviation|trend|wave|waves|country|countries|respondents?|which|what|find|show|questions?|survey|about|related|are|is|the|to|with|of)\b/giu,
       " ",
     )
     .replace(
-      /(?:平均分?|分佈|分布|中位數?|中位回答|四分位數?|標準差|标准差|趨勢|趋势|波次|國家|国家|受訪者|受访者|哪些|什麼|什么|有關|有关|相關|相关|題目|题目|問題|问题|請找|请找|幫我找|帮我找)/gu,
+      /(?:平均(?:分|值|數|数)?|分佈|分布|中位數?|中位回答|四分位數?|標準差|标准差|趨勢|趋势|波次|國家|国家|受訪者|受访者|哪些|什麼|什么|有關|有关|相關|相关|題目|题目|問題|问题|請找|请找|幫我找|帮我找|程度|水平)/gu,
       " ",
     )
+    .replace(/(?:^|\s)(?:的|在|是|和|與|与|以及|我|想|要|看|請|请|一下|各)(?=\s|$)/gu, " ")
     .replace(/[^\p{L}\p{N}.]+/gu, " ")
     .trim();
 }
@@ -808,6 +860,16 @@ export function catalogMatch(questionItem: Question, query: string): {
   const coverage = matchedTokens / tokens.length;
   if (coverage === 1) score += 180;
   else if (coverage >= 0.6) score += 60;
+  const requestedStatistic = parseStatistic(query);
+  if (requestedStatistic) {
+    score += statisticSupportedBy(questionItem, requestedStatistic) ? 320 : -320;
+  }
+  for (const intent of QUESTION_MEASURE_INTENTS) {
+    if (intent.query.test(query) && intent.question.test(questionText)) {
+      score += intent.boost;
+      if (!reasons.includes("question_phrase")) reasons.unshift("question_phrase");
+    }
+  }
   const finalScore = score * (0.35 + coverage);
   const band = normalized === idText
       || (questionText.includes(normalized) && tokens.length >= 2)
@@ -849,6 +911,21 @@ function parseStatistic(message: string): Statistic | null {
   return null;
 }
 
+function statisticSupportedBy(
+  questionItem: Question,
+  statistic: Statistic | null,
+): boolean {
+  return (
+    !statistic ||
+    statistic === "distribution" ||
+    statistic === "base_n" ||
+    ((statistic === "mean" || statistic === "sd") &&
+      questionItem.modes.includes("continuous")) ||
+    ((statistic === "median" || statistic === "quartiles") &&
+      questionItem.modes.includes("order"))
+  );
+}
+
 function parseCountries(message: string): {
   values: number[];
   operation: "set" | "add" | "remove";
@@ -865,12 +942,10 @@ function parseCountries(message: string): {
   const add = /(?:add|include|plus|also|增加|新增|加入|加上|也看|再加)/iu.test(
     normalized,
   );
-  const all = /(?:all (?:countries|regions|places)|全部(?:國家|国家|地區|地区))/iu.test(
-    normalized,
-  );
+  const all = ALL_COUNTRIES_PATTERN.test(normalized);
   const unsupported =
     /^(?:americans?|美國人|美国人)[？?!.。]*$/iu.test(normalized.trim()) ||
-    /(?:american|united states)\s+(?:respondents?|sample|survey data)|(?:美國人|美国人)(?:的)?(?:數據|数据|資料|资料|樣本|样本|調查|调查)|(?:我要看|改成|換成|换成|受訪者(?:是|改成)?|受访者(?:是|改成)?|樣本(?:是|改成)?|样本(?:是|改成)?)[^。！？!?\n]{0,16}(?:美國人|美国人)/iu.test(
+    /(?:american|united states)\s+(?:respondents?|sample|survey data)|(?:美國|美国)(?:的)?(?:人|受訪者|受访者|樣本|样本)(?:的)?(?:數據|数据|資料|资料|樣本|样本|調查|调查)?|(?:我要看|改成|換成|换成|受訪者(?:是|改成)?|受访者(?:是|改成)?|樣本(?:是|改成)?|样本(?:是|改成)?)[^。！？!?\n]{0,16}(?:美國人|美国人)/iu.test(
       normalized,
     );
   return {
@@ -890,16 +965,28 @@ function parseWaves(message: string): {
   const values = [
     ...normalized.matchAll(/(?:\bwave\s*|\bw\s*|第\s*)([1-6])(?:\s*波)?\b/giu),
   ].map((match) => Number(match[1]));
+  if (FIRST_THREE_WAVES_PATTERN.test(normalized)) values.push(1, 2, 3);
+  if (LATEST_TWO_WAVES_PATTERN.test(normalized)) values.push(5, 6);
+  if (LATEST_THREE_WAVES_PATTERN.test(normalized)) values.push(4, 5, 6);
+  const ranges = [
+    ...normalized.matchAll(
+      /(?:\bwaves?\s*|\bw\s*|第\s*)?([1-6])\s*(?:-|–|—|to|through|至|到)\s*(?:\bwaves?\s*|\bw\s*|第\s*)?([1-6])(?:\s*波)?/giu,
+    ),
+  ];
+  for (const range of ranges) {
+    const start = Number(range[1]);
+    const end = Number(range[2]);
+    const low = Math.min(start, end);
+    const high = Math.max(start, end);
+    for (let wave = low; wave <= high; wave += 1) values.push(wave);
+  }
   const remove = /(?:remove|exclude|drop|without|刪除|删除|移除|排除|不要)/iu.test(
     normalized,
   );
   const add = /(?:add|include|plus|also|增加|新增|加入|加上|也看|再加)/iu.test(
     normalized,
   );
-  const all =
-    /(?:all waves|across waves|over time|trend|全部波次|所有波次|各波|趨勢|趋势)/iu.test(
-      normalized,
-    );
+  const all = ALL_WAVES_PATTERN.test(normalized);
   return {
     values: [...new Set(values)].sort(),
     operation: remove ? "remove" : add ? "add" : "set",
@@ -1220,16 +1307,33 @@ async function answerPlan(
     addTurn(state, "assistant", message);
     return publicConversation(state, "needs_clarification", "clarified", message);
   }
-  const statisticSupported =
-    !state.plan.statistic ||
-    state.plan.statistic === "distribution" ||
-    state.plan.statistic === "base_n" ||
-    ((state.plan.statistic === "mean" || state.plan.statistic === "sd") &&
-      questionItem.modes.includes("continuous")) ||
-    ((state.plan.statistic === "median" ||
-      state.plan.statistic === "quartiles") &&
-      questionItem.modes.includes("order"));
-  if (!statisticSupported) {
+  const requestedStatistic = state.plan.statistic;
+  if (!statisticSupportedBy(questionItem, requestedStatistic)) {
+    const compatible = state.questionQuery && requestedStatistic
+      ? (await catalogSearch(
+          `${state.questionQuery} ${STATISTIC_LABEL_ZH[requestedStatistic]}`,
+        )).questions.filter(
+          (candidate) =>
+            candidate.variable_id !== questionItem.variable_id &&
+            statisticSupportedBy(candidate, requestedStatistic),
+        )
+      : [];
+    if (compatible.length) {
+      const supportedStatistic = requestedStatistic as Statistic;
+      state.previousPlan = clonePlan(state.plan);
+      state.plan.questionId = null;
+      const options = questionOptions(compatible);
+      setPending(
+        state,
+        "question",
+        "Choose a compatible survey question.",
+        ["question"],
+        options,
+      );
+      const message = `${questionItem.variable_id} 沒有可用的${STATISTIC_LABEL_ZH[supportedStatistic]}設定，因此不能直接計算。以下題目支援${STATISTIC_LABEL_ZH[supportedStatistic]}，請選擇最符合原意者：`;
+      addTurn(state, "assistant", message);
+      return publicConversation(state, "needs_clarification", "clarified", message);
+    }
     state.plan.statistic = null;
   }
   if (!state.plan.statistic) {
@@ -1343,19 +1447,95 @@ function questionOptions(items: Question[]): ConversationOption[] {
   }));
 }
 
-function questionLikeInput(message: string): boolean {
-  const normalized = message.normalize("NFKC").toLowerCase();
-  const operational =
-    parseStatistic(normalized) !== null ||
-    parseCountries(normalized).values.length > 0 ||
-    parseWaves(normalized).values.length > 0 ||
-    parseWaves(normalized).all;
-  const shortOperational =
-    operational &&
-    normalized
-      .replace(/[a-z]+|\p{Script=Han}+/gu, " ")
-      .trim().length === 0;
-  return !shortOperational;
+function replacePattern(value: string, pattern: RegExp): string {
+  const flags = [...new Set(`${pattern.flags}g`.split(""))].join("");
+  return value.replace(new RegExp(pattern.source, flags), " ");
+}
+
+function operationalRemainder(message: string): string {
+  let normalized = message.normalize("NFKC").toLowerCase();
+  normalized = replacePattern(normalized, ALL_COUNTRIES_PATTERN);
+  normalized = replacePattern(normalized, ALL_WAVES_PATTERN);
+  normalized = replacePattern(normalized, FIRST_THREE_WAVES_PATTERN);
+  normalized = replacePattern(normalized, LATEST_TWO_WAVES_PATTERN);
+  normalized = replacePattern(normalized, LATEST_THREE_WAVES_PATTERN);
+  for (const [, pattern] of COUNTRY_ALIASES) {
+    normalized = replacePattern(normalized, pattern);
+  }
+  return normalized
+    .replace(
+      /(?:standard deviation|\bsd\b|quartiles?|median|distribution|valid (?:n|responses?)|sample size|mean|average)/giu,
+      " ",
+    )
+    .replace(
+      /(?:標準差|标准差|四分位數?|四分位数?|中位數?|中位数?|中位回答|分佈|分布|有效人數|有效人数|樣本數|样本数|平均(?:分|值|數|数)?)/gu,
+      " ",
+    )
+    .replace(
+      /(?:\bwaves?\s*|\bw\s*|第\s*)[1-6](?:\s*(?:-|–|—|to|through|至|到)\s*(?:\bwaves?\s*|\bw\s*|第\s*)?[1-6])?(?:\s*波)?/giu,
+      " ",
+    )
+    .replace(
+      /\b(?:add|include|remove|exclude|drop|without|plus|also|switch|change|set|only|just|instead|show|view|use|data|results?|respondents?|samples?|please|then|and|or|to|from|for|in)\b/giu,
+      " ",
+    )
+    .replace(
+      /(?:增加|新增|加入|加上|再加|刪除|删除|移除|排除|不要|改看|改成|換成|换成|切換|切换|只看|僅看|仅看|也看|資料|资料|數據|数据|結果|结果|受訪者|受访者|樣本|样本|請|请|幫我|帮我|我要|我想|想看|看看|查看|那|呢|再|並且|并且|以及|和|與|与|或|的|一下)/gu,
+      " ",
+    )
+    .replace(/[^\p{L}\p{N}.]+/gu, " ")
+    .trim();
+}
+
+function operationalOnly(message: string): boolean {
+  const countries = parseCountries(message);
+  const waves = parseWaves(message);
+  const hasOperation =
+    parseStatistic(message) !== null ||
+    countries.values.length > 0 ||
+    countries.all ||
+    waves.values.length > 0 ||
+    waves.all;
+  return hasOperation && operationalRemainder(message).length === 0;
+}
+
+function applyConversationModifiers(
+  state: ConversationState,
+  countries: ReturnType<typeof parseCountries>,
+  waves: ReturnType<typeof parseWaves>,
+  statistic: Statistic | null,
+  data: Bootstrap,
+): void {
+  if (statistic) state.plan.statistic = statistic;
+  if (countries.all) {
+    const allCountries = data.countries.map((item) => item.country_code);
+    state.plan.countries =
+      countries.operation === "remove"
+        ? []
+        : applyListChange(
+            state.plan.countries,
+            countries.operation,
+            allCountries,
+          );
+  } else if (countries.values.length) {
+    state.plan.countries = applyListChange(
+      state.plan.countries,
+      countries.operation,
+      countries.values,
+    );
+  }
+  if (waves.all) {
+    state.plan.waves =
+      waves.operation === "remove"
+        ? []
+        : applyListChange(state.plan.waves, waves.operation, data.waves);
+  } else if (waves.values.length) {
+    state.plan.waves = applyListChange(
+      state.plan.waves,
+      waves.operation,
+      waves.values,
+    );
+  }
 }
 
 async function sendConversationMessage(
@@ -1399,16 +1579,46 @@ async function sendConversationMessage(
         (item) => item.variable_id.toLowerCase() === explicitId,
       )
     : null;
+  const hasOperationalChange =
+    statistic !== null ||
+    countries.values.length > 0 ||
+    countries.all ||
+    waves.values.length > 0 ||
+    waves.all;
+  const isOperationalOnly = operationalOnly(trimmed);
   const currentCanContinue =
     Boolean(state.plan.questionId) &&
     !explicitQuestion &&
-    (statistic !== null ||
-      countries.values.length > 0 ||
-      countries.all ||
-      waves.values.length > 0 ||
-      waves.all) &&
+    hasOperationalChange &&
+    isOperationalOnly &&
     !/(?:new question|another question|換題|换题|新問題|新问题)/iu.test(trimmed);
-  if (explicitQuestion || !currentCanContinue || questionLikeInput(trimmed) && !state.plan.questionId) {
+
+  if (
+    state.pending?.kind === "question" &&
+    !explicitQuestion &&
+    isOperationalOnly &&
+    hasOperationalChange
+  ) {
+    applyConversationModifiers(state, countries, waves, statistic, data);
+    if (state.questionQuery && statistic) {
+      const matches = (await catalogSearch(
+        `${state.questionQuery} ${STATISTIC_LABEL_ZH[statistic]}`,
+      )).questions;
+      state.options = questionOptions(matches);
+    }
+    const reply = "已記錄這項分析條件；請繼續選擇最符合需求的調查題目。";
+    addTurn(state, "assistant", reply);
+    return publicConversation(state, "needs_clarification", "clarified", reply);
+  }
+
+  if (!state.plan.questionId && isOperationalOnly && !explicitQuestion) {
+    applyConversationModifiers(state, countries, waves, statistic, data);
+    const reply = "已記錄國家、波次或統計條件；請再說明要分析的調查主題或題目。";
+    addTurn(state, "assistant", reply);
+    return publicConversation(state, "needs_clarification", "clarified", reply);
+  }
+
+  if (explicitQuestion || !currentCanContinue) {
     const matches = explicitQuestion
       ? [explicitQuestion]
       : (await catalogSearch(trimmed)).questions;
@@ -1420,13 +1630,14 @@ async function sendConversationMessage(
       return publicConversation(state, "unsupported", "unsupported", reply);
     }
     if (!explicitQuestion) {
+      state.questionQuery = trimmed;
       state.plan = {
         questionId: null,
-        statistic,
-        countries: countries.values,
-        waves: waves.all ? [] : waves.values,
+        statistic: null,
+        countries: [],
+        waves: [],
       };
-      if (countries.all) state.plan.countries = data.countries.map((item) => item.country_code);
+      applyConversationModifiers(state, countries, waves, statistic, data);
       setPending(
         state,
         "question",
@@ -1438,28 +1649,11 @@ async function sendConversationMessage(
       addTurn(state, "assistant", reply);
       return publicConversation(state, "needs_clarification", "clarified", reply);
     }
+    state.questionQuery = null;
     state.previousPlan = clonePlan(state.plan);
     state.plan.questionId = explicitQuestion.variable_id;
   }
-  if (statistic) state.plan.statistic = statistic;
-  if (countries.all) {
-    state.plan.countries = data.countries.map((item) => item.country_code);
-  } else if (countries.values.length) {
-    state.plan.countries = applyListChange(
-      state.plan.countries,
-      countries.operation,
-      countries.values,
-    );
-  }
-  if (waves.all) {
-    state.plan.waves = data.waves;
-  } else if (waves.values.length) {
-    state.plan.waves = applyListChange(
-      state.plan.waves,
-      waves.operation,
-      waves.values,
-    );
-  }
+  applyConversationModifiers(state, countries, waves, statistic, data);
   return answerPlan(state, state.activeSnapshot ? "revised" : "analyzed");
 }
 
@@ -1551,6 +1745,7 @@ async function sendConversationCommand(
       state.plan = clonePlan(state.previousPlan);
     } else if (command.operation === "restart_question") {
       state.plan = { questionId: null, statistic: null, countries: [], waves: [] };
+      state.questionQuery = null;
       state.activeSnapshot = null;
       state.pending = null;
       state.options = [];
@@ -1574,6 +1769,7 @@ async function createConversation(): Promise<ConversationResponse> {
     revision: 0,
     turns: [],
     plan: { questionId: null, statistic: null, countries: [], waves: [] },
+    questionQuery: null,
     pending: null,
     options: [],
     activeSnapshot: null,
@@ -1588,6 +1784,7 @@ async function startNewQuestion(conversationId: string): Promise<ConversationRes
   if (!state) throw new Error("The conversation is no longer available.");
   state.revision += 1;
   state.plan = { questionId: null, statistic: null, countries: [], waves: [] };
+  state.questionQuery = null;
   state.pending = null;
   state.options = [];
   state.activeSnapshot = null;
