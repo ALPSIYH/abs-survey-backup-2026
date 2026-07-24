@@ -1545,7 +1545,7 @@ function App() {
         <div className="panel-title"><span>{bi(locale, "Question library", "題庫")}</span><strong>{bi(locale, "Choose a survey question", "選擇分析題目")}</strong></div>
         <div className="catalog-tabs">
           <button className={catalogKind === "questions" ? "active" : ""} onClick={() => { setCatalogKind("questions"); setQuery(""); }}>{bi(locale, "Questions", "單題")}</button>
-          <button className={catalogKind === "response_sets" ? "active" : ""} onClick={() => { setCatalogKind("response_sets"); setQuery(""); }}>{bi(locale, "Multiple response", "多選題組")}</button>
+          <button className={catalogKind === "response_sets" ? "active" : ""} onClick={() => { setCatalogKind("response_sets"); setQuery(""); }}>{bi(locale, "Response sets", "多選題組")}</button>
         </div>
         <label className="search-box">{semanticSearchBusy ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />}<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={bi(locale, "Search question ID, wording, or topic", "搜尋題號、題目或主題")} />{query && <button aria-label={bi(locale, "Clear search", "清除搜尋")} title={bi(locale, "Clear search", "清除搜尋")} onClick={() => setQuery("")}><X size={14} /></button>}</label>
         <label className="topic-filter">
@@ -1580,7 +1580,17 @@ function App() {
         {surface === "conversation" && !result ? <ConversationWorkspaceEmpty locale={locale} /> : !draft.target_id ? <EmptyWorkspace locale={locale} /> : <>
           <div className="active-variable">
             <div><span className="section-kicker">{draft.target_id} · {bi(locale, "Current question", "目前分析題目")}</span><h1>{selectedQuestion?.question_text ?? selectedResponseSet?.label}</h1><p>{selectedQuestion ? `${bi(locale, "Available waves", "可用波次")} ${selectedQuestion.waves.map((wave) => `W${wave}`).join(locale === "en" ? ", " : "、")}` : `${responseSetDetail?.member_count ?? 0} ${bi(locale, "response positions", "個回答槽")}`}</p></div>
-            {detail && <button className="quiet-button" onClick={() => setShowScale((open) => !open)}><Eye size={16} />{showScale ? bi(locale, "Hide scale", "收起量表") : bi(locale, "View scale", "完整量表")}</button>}
+            {detail && (
+              <button
+                type="button"
+                className="quiet-button"
+                aria-expanded={showScale}
+                onClick={() => setShowScale((open) => !open)}
+              >
+                <Eye size={16} />
+                <span>{showScale ? bi(locale, "Hide scale", "收起量表") : bi(locale, "View scale", "完整量表")}</span>
+              </button>
+            )}
           </div>
 
           {showScale && detail && <ScalePanel detail={detail} locale={locale} />}
