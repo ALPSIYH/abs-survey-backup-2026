@@ -27,6 +27,7 @@ globalThis.fetch = async (input: string | URL | Request): Promise<Response> => {
 };
 
 const { api } = await import("../app/api");
+const { localizeAssistantMessage, localizeOptionLabel } = await import("../app/i18n");
 
 function draft(
   overrides: Partial<Parameters<typeof api.analyze>[0]> = {},
@@ -173,7 +174,15 @@ test("assistant rejects unsupported respondent samples even with another place i
     secondConversation.revision,
   );
   assert.equal(correction.status, "unsupported");
-  assert.match(correction.message, /does not contain a United States respondent sample/i);
+  assert.match(correction.message, /ABS 資料沒有 United States 的受訪者樣本/u);
+  assert.match(
+    localizeAssistantMessage("en", correction.message),
+    /ABS data do not include respondents from United States/i,
+  );
+  assert.equal(
+    localizeAssistantMessage("zh-Hant", correction.message),
+    correction.message,
+  );
 });
 
 test("assistant searches Chinese topics and returns explicit question choices", async () => {
@@ -203,6 +212,10 @@ test("assistant can execute a complete explicit request without extra clicks", a
   assert.equal(response.active_snapshot?.view.statistic, "mean");
   assert.equal(response.active_snapshot?.view.presentation_type, "trend");
   assert.equal(response.active_snapshot?.view.rows.length, 6);
+  assert.match(
+    localizeAssistantMessage("en", response.message),
+    /Completed the mean score analysis for q95/i,
+  );
 });
 
 test("assistant does not silently calculate means for category-only questions", async () => {
@@ -215,4 +228,8 @@ test("assistant does not silently calculate means for category-only questions", 
   assert.equal(response.status, "needs_clarification");
   assert.equal(response.pending?.kind, "statistic");
   assert.equal(response.options.some((option) => option.value === "mean"), false);
+  assert.equal(
+    localizeOptionLabel("en", response.options[0].label),
+    "response distribution",
+  );
 });

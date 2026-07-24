@@ -61,6 +61,16 @@ interface CloudCatalog extends StaticCatalog {
 
 type Statistic = StatisticalView["statistic"];
 
+const STATISTIC_LABEL_ZH: Record<Statistic, string> = {
+  distribution: "回答分布",
+  category_share: "指定回答比例",
+  mean: "平均分",
+  median: "中位回答",
+  quartiles: "四分位數",
+  sd: "標準差",
+  base_n: "有效人數",
+};
+
 interface ConversationPlan {
   questionId: string | null;
   statistic: Statistic | null;
@@ -875,23 +885,17 @@ function setPending(
 }
 
 function statisticOptions(questionItem: Question): ConversationOption[] {
-  const values: Array<[Statistic, string]> = [["distribution", "Response distribution"]];
+  const values: Statistic[] = ["distribution"];
   if (questionItem.modes.includes("continuous")) {
-    values.push(
-      ["mean", "Mean score"],
-      ["sd", "Standard deviation"],
-    );
+    values.push("mean", "sd");
   }
   if (questionItem.modes.includes("order")) {
-    values.push(
-      ["median", "Median response"],
-      ["quartiles", "Quartiles"],
-    );
+    values.push("median", "quartiles");
   }
-  values.push(["base_n", "Valid responses"]);
-  return values.map(([value, label]) => ({
+  values.push("base_n");
+  return values.map((value) => ({
     option_id: nextId("option"),
-    label,
+    label: STATISTIC_LABEL_ZH[value],
     value,
     description: null,
   }));
@@ -1054,8 +1058,8 @@ function suggestionsFor(
       action_id: nextId("suggestion"),
       label:
         state.plan.statistic === "distribution"
-          ? "View mean score"
-          : "View response distribution",
+          ? "改看平均分"
+          : "改看回答分布",
       command: {
         kind: "set_statistic",
         statistic:
@@ -1067,7 +1071,7 @@ function suggestionsFor(
     },
     {
       action_id: nextId("suggestion"),
-      label: "Change countries and regions",
+      label: "調整比較國家",
       command: { kind: "modify_countries", operation: "set", selector: "explicit" },
       control: "country_multiselect",
       choices: [...COUNTRY_ALIASES].map(([code]) => ({
@@ -1075,13 +1079,13 @@ function suggestionsFor(
         label: COUNTRY_NAMES.get(code) ?? String(code),
         selected: state.plan.countries.includes(code),
         available: countries.has(code),
-        description: countries.has(code) ? null : "No data for this question",
+        description: countries.has(code) ? null : "這題沒有資料",
       })),
       based_on_revision: state.revision,
     },
     {
       action_id: nextId("suggestion"),
-      label: "Change survey waves",
+      label: "調整調查波次",
       command: {
         kind: "modify_waves",
         operation: "set",
@@ -1093,13 +1097,13 @@ function suggestionsFor(
         label: `Wave ${wave}`,
         selected: state.plan.waves.includes(wave),
         available: waves.has(wave),
-        description: waves.has(wave) ? null : "No data for this question",
+        description: waves.has(wave) ? null : "這題沒有資料",
       })),
       based_on_revision: state.revision,
     },
     {
       action_id: nextId("suggestion"),
-      label: "Analyze another question",
+      label: "分析另一個題目",
       command: { kind: "repair", operation: "restart_question" },
       control: "command",
       choices: [],
@@ -1118,8 +1122,8 @@ async function answerPlan(
     (candidate) => candidate.variable_id === state.plan.questionId,
   );
   if (!questionItem) {
-    setPending(state, "question", "Choose a survey question.", ["question"], []);
-    const message = "Choose a survey question before continuing.";
+    setPending(state, "question", "請選擇調查題目。", ["question"], []);
+    const message = "請先選擇題目。";
     addTurn(state, "assistant", message);
     return publicConversation(state, "needs_clarification", "clarified", message);
   }
@@ -1144,7 +1148,8 @@ async function answerPlan(
       ["statistic"],
       options,
     );
-    const message = `Found ${questionItem.variable_id} · ${questionItem.question_text}. Choose the statistic to display.`;
+    const statistics = options.map((option) => option.label).join("、");
+    const message = `已找到 ${questionItem.variable_id} · ${questionItem.question_text}。你要看哪個統計量：${statistics}？`;
     addTurn(state, "assistant", message);
     return publicConversation(state, "needs_clarification", "clarified", message);
   }
@@ -1161,7 +1166,7 @@ async function answerPlan(
     const available = [...new Set(contexts.map((context) => context.country_code))];
     const allOption: ConversationOption = {
       option_id: nextId("option"),
-      label: "All available countries and regions",
+      label: "全部國家或地區",
       value: "all",
       description: null,
     };
@@ -1177,7 +1182,7 @@ async function answerPlan(
         })),
     ];
     setPending(state, "country", "Choose countries or regions.", ["countries"], options);
-    const message = `Found ${questionItem.variable_id} · ${questionItem.question_text}. Choose the respondent countries or regions.`;
+    const message = `已找到 ${questionItem.variable_id} · ${questionItem.question_text}。請選擇受訪者的國家或地區。`;
     addTurn(state, "assistant", message);
     return publicConversation(state, "needs_clarification", "clarified", message);
   }
@@ -1192,7 +1197,7 @@ async function answerPlan(
     const options: ConversationOption[] = [
       {
         option_id: nextId("option"),
-        label: "All available waves",
+        label: "全部可用波次",
         value: "all",
         description: available.map((wave) => `W${wave}`).join(", "),
       },
@@ -1204,7 +1209,7 @@ async function answerPlan(
       })),
     ];
     setPending(state, "wave", "Choose survey waves.", ["waves"], options);
-    const message = `${questionItem.variable_id} is available in several waves. Choose one wave or all available waves.`;
+    const message = `${questionItem.variable_id} 在所選地區有多個波次；請選擇一個波次或全部可用波次。`;
     addTurn(state, "assistant", message);
     return publicConversation(state, "needs_clarification", "clarified", message);
   }
@@ -1222,7 +1227,7 @@ async function answerPlan(
     view,
   };
   const excluded = view.coverage.excluded_contexts;
-  const message = `Completed the ${state.plan.statistic.replace("_", " ")} analysis for ${questionItem.variable_id}.${excluded.length ? ` Excluded because no data were available: ${excluded.map((item) => `${data.countries.find((country) => country.country_code === item.country_code)?.display_name ?? item.country_code} W${item.wave}`).join(", ")}.` : ""}`;
+  const message = `已完成 ${questionItem.variable_id} 的${STATISTIC_LABEL_ZH[state.plan.statistic]}分析。${excluded.length ? ` 未納入的資料範圍：${excluded.map((item) => `${data.countries.find((country) => country.country_code === item.country_code)?.display_name ?? item.country_code} W${item.wave}`).join("、")}。` : ""}`;
   addTurn(state, "assistant", message, state.activeSnapshot.snapshot_id);
   return publicConversation(
     state,
@@ -1271,7 +1276,7 @@ async function sendConversationMessage(
   if (/^(?:thanks?|thank you|謝謝|谢谢|好的|好)$/iu.test(trimmed)) {
     state.pending = null;
     state.options = [];
-    const reply = "You are welcome. Continue with a new statistic, country, wave, or survey topic whenever you are ready.";
+    const reply = "不客氣。你可以繼續調整統計量、國家、波次，或提出新的調查主題。";
     addTurn(state, "assistant", reply);
     const detail = state.plan.questionId ? await question(state.plan.questionId) : null;
     return publicConversation(
@@ -1286,8 +1291,7 @@ async function sendConversationMessage(
   if (countries.unsupported) {
     state.pending = null;
     state.options = [];
-    const reply =
-      "The survey does not contain a United States respondent sample. You can analyze Asian Barometer respondent countries, or search for questions that ask about the United States.";
+    const reply = "目前的 ABS 資料沒有 United States 的受訪者樣本；目前結果未被修改。";
     addTurn(state, "assistant", reply);
     return publicConversation(state, "unsupported", "unsupported", reply);
   }
@@ -1316,8 +1320,7 @@ async function sendConversationMessage(
     if (!matches.length) {
       state.pending = null;
       state.options = [];
-      const reply =
-        "No matching survey question was found. Try a question ID or a more specific survey topic.";
+      const reply = "目前找不到符合這個概念的題目；請提供題號或更完整的題目文字。";
       addTurn(state, "assistant", reply);
       return publicConversation(state, "unsupported", "unsupported", reply);
     }
@@ -1332,11 +1335,11 @@ async function sendConversationMessage(
       setPending(
         state,
         "question",
-        "Choose the survey question that best matches your request.",
+        "請選擇最符合需求的調查題目。",
         ["question"],
         questionOptions(matches),
       );
-      const reply = "Choose the survey question that best matches your request.";
+      const reply = "這個說法可能對應不同的測量。請選擇題目：";
       addTurn(state, "assistant", reply);
       return publicConversation(state, "needs_clarification", "clarified", reply);
     }
@@ -1456,13 +1459,13 @@ async function sendConversationCommand(
       state.activeSnapshot = null;
       state.pending = null;
       state.options = [];
-      const reply = "Start a new question by describing the topic you want to analyze.";
+      const reply = "已開始新問題。";
       addTurn(state, "assistant", reply, null, "flow_boundary");
       return publicConversation(state, "answered", "discussed", reply);
     } else if (command.operation === "cancel_pending") {
       state.pending = null;
       state.options = [];
-      const reply = "The pending choice was cancelled.";
+      const reply = "已取消目前的澄清；既有分析結果沒有被修改。";
       addTurn(state, "assistant", reply);
       return publicConversation(state, "answered", "acknowledged", reply);
     }
@@ -1493,7 +1496,7 @@ async function startNewQuestion(conversationId: string): Promise<ConversationRes
   state.pending = null;
   state.options = [];
   state.activeSnapshot = null;
-  const message = "New question";
+  const message = "已開始新問題。";
   addTurn(state, "assistant", message, null, "flow_boundary");
   return publicConversation(state, "answered", "discussed", message);
 }

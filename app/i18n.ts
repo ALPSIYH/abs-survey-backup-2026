@@ -343,6 +343,9 @@ const STATIC_ASSISTANT_ENGLISH: Record<string, string> = {
   "目前沒有可撤銷的分析修改。":
     "There is no analysis change to undo.",
   "結果已顯示於分析區": "The result is shown in the analysis area",
+  "請先選擇題目。": "Choose a survey question before continuing.",
+  "不客氣。你可以繼續調整統計量、國家、波次，或提出新的調查主題。":
+    "You are welcome. Continue with a new statistic, country, wave, or survey topic whenever you are ready.",
 };
 
 export function t(
