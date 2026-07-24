@@ -16,13 +16,11 @@ import {
   CircleHelp,
   Database,
   Eye,
+  FileQuestion,
   ListFilter,
   LoaderCircle,
-  Maximize2,
+  MessageSquarePlus,
   MessageSquareText,
-  Minimize2,
-  Plus,
-  RotateCcw,
   Search,
   Send,
   Table2,
@@ -628,7 +626,6 @@ function App() {
     const requested = new URLSearchParams(window.location.search).get("view");
     return requested === "workbench" ? "workbench" : "conversation";
   });
-  const [assistantWide, setAssistantWide] = useState(false);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1421,7 +1418,6 @@ function App() {
       const response = await api.startNewQuestion(conversation.conversation_id);
       setConversation(response);
       conversationSnapshotRef.current = null;
-      setResult(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : bi(locale, "Unable to start a new question.", "無法開始新問題"));
     }
@@ -1471,6 +1467,12 @@ function App() {
   const currentSuggestions = conversation?.suggestions
     .filter((suggestion) => suggestion.based_on_revision === conversation.revision)
     ?? [];
+  const lastConversationTurn = conversation?.turns[conversation.turns.length - 1] ?? null;
+  const atNewQuestionBoundary = (
+    lastConversationTurn?.kind === "flow_boundary"
+    && !conversation?.pending
+    && !conversation?.active_snapshot
+  );
   const activeScopeSuggestion = currentSuggestions.find(
     (suggestion) => (
       suggestion.action_id === openSuggestionEditor
@@ -1501,7 +1503,7 @@ function App() {
 
   return (
     <div
-      className={`app-shell surface-${surface} ${assistantWide ? "assistant-wide" : ""}`}
+      className={`app-shell surface-${surface}`}
       data-font-size={fontSize}
     >
       <header className="topbar">
@@ -1759,7 +1761,42 @@ function App() {
       </main>
 
       <aside className="assistant-panel" aria-busy={assistantBusy}>
-        <div className="assistant-heading"><div><Bot size={19} /><span><strong>{bi(locale, "Analysis assistant", "分析助理")}</strong><small>{bootstrap.assistant.available ? bi(locale, "Cloud catalog and statistics connected", "雲端題庫與統計已連線") : bi(locale, "Manual analysis remains available", "仍可使用手動分析")}</small></span></div><div className="assistant-actions"><i className={bootstrap.assistant.available ? "online" : "offline"} /><button title={bi(locale, "New question", "新問題")} aria-label={bi(locale, "New question", "新問題")} disabled={!conversation?.turns.length} onClick={beginNewQuestion}><Plus size={16} /></button><button title={bi(locale, "New conversation", "新對話")} aria-label={bi(locale, "New conversation", "新對話")} disabled={!conversation?.turns.length} onClick={beginNewConversation}><RotateCcw size={15} /></button><button title={assistantWide ? bi(locale, "Collapse assistant", "縮小助理") : bi(locale, "Expand assistant", "展開助理")} aria-label={assistantWide ? bi(locale, "Collapse assistant", "縮小助理") : bi(locale, "Expand assistant", "展開助理")} onClick={() => setAssistantWide((current) => !current)}>{assistantWide ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button></div></div>
+        <div className="assistant-heading">
+          <div><Bot size={19} /><span><strong>{bi(locale, "Analysis assistant", "分析助理")}</strong><small>{bootstrap.assistant.available ? bi(locale, "Cloud catalog and statistics connected", "雲端題庫與統計已連線") : bi(locale, "Manual analysis remains available", "仍可使用手動分析")}</small></span></div>
+          <div className="assistant-actions">
+            <i className={bootstrap.assistant.available ? "online" : "offline"} />
+            {surface === "conversation" ? (
+              <>
+                <button
+                  className="labeled"
+                  title={bi(locale, "Start another question and keep this conversation", "保留對話內容並開始另一個問題")}
+                  disabled={!conversation?.turns.length || atNewQuestionBoundary}
+                  onClick={beginNewQuestion}
+                >
+                  <FileQuestion size={15} />
+                  <span>{bi(locale, "New question", "新問題")}</span>
+                </button>
+                <button
+                  className="labeled"
+                  title={bi(locale, "Start a new conversation and clear current messages", "建立新對話並清除目前訊息")}
+                  disabled={!conversation?.turns.length}
+                  onClick={beginNewConversation}
+                >
+                  <MessageSquarePlus size={15} />
+                  <span>{bi(locale, "New conversation", "新對話")}</span>
+                </button>
+              </>
+            ) : (
+              <button
+                title={bi(locale, "Open conversation analysis", "前往對話分析")}
+                aria-label={bi(locale, "Open conversation analysis", "前往對話分析")}
+                onClick={() => chooseSurface("conversation")}
+              >
+                <MessageSquareText size={16} />
+              </button>
+            )}
+          </div>
+        </div>
         <div className="assistant-messages">
           {!conversation?.turns.length && <div className="assistant-intro"><strong>{bi(locale, "Ask about the survey data", "直接詢問調查資料")}</strong><p>{bi(locale, "Describe the analysis you need. Questions, scope, and statistics are verified against the survey data.", "描述分析需求後，系統會依調查資料確認題目、範圍與統計數字。")}</p></div>}
           {conversation?.turns.map((turn, index) => {
@@ -1974,7 +2011,7 @@ function App() {
             onCompositionStart={() => { assistantComposingRef.current = true; }}
             onCompositionEnd={() => { assistantComposingRef.current = false; }}
             placeholder={bi(locale, "Ask in any language about a question, statistic, country, or wave", "可使用任何語言詢問題目、統計量、國家或波次")}
-            rows={assistantWide || surface === "conversation" ? 4 : 3}
+            rows={surface === "conversation" ? 4 : 3}
           />
           <div>
             <span className="assistant-form-meta">

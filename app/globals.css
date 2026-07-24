@@ -51,7 +51,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   grid-template-areas: "top top top" "library workspace assistant";
   background: #F6F4EF;
 }
-.app-shell.assistant-wide { grid-template-columns: 294px minmax(600px, 1fr) 470px; }
 .app-shell.surface-conversation {
   grid-template-columns: minmax(660px, 1.25fr) minmax(430px, .75fr);
   grid-template-areas: "top top" "workspace assistant";
@@ -436,6 +435,7 @@ tbody tr:hover { background: #FAF8F2; }
 .assistant-actions { display: flex; align-items: center; gap: 3px; }
 .assistant-actions i { margin-right: 5px; }
 .assistant-actions button { width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 3px; background: transparent; color: #6B675C; cursor: pointer; }
+.assistant-actions button.labeled { width: auto; padding: 0 7px; display: inline-flex; gap: 5px; font-size: var(--type-caption); white-space: nowrap; }
 .assistant-actions button:hover { color: var(--accent); border-color: var(--border); background: #fff; }
 .assistant-actions button:disabled { opacity: .28; cursor: default; }
 .assistant-messages { min-height: 0; flex: 1; overflow-y: auto; padding: 13px; }
@@ -834,7 +834,6 @@ table,
   html, body, #root { min-height: 100%; height: auto; }
   body { overflow: auto; }
   .app-shell,
-  .app-shell.assistant-wide,
   .app-shell.surface-conversation {
     width: 100%; height: auto; min-height: 100vh;
     grid-template-columns: minmax(0, 1fr);
