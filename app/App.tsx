@@ -965,6 +965,17 @@ function App() {
     }));
   }
 
+  function chooseResponsePosition(
+    responseScope: Draft["response_scope"],
+    memberOrder: number | null,
+  ): void {
+    setDraft((current) => patchDraft(current, {
+      response_scope: responseScope,
+      member_order: responseScope === "specific_member" ? memberOrder ?? 1 : null,
+      origin: "manual",
+    }));
+  }
+
   async function chooseSecondary(question: Question): Promise<void> {
     try {
       const loaded = await loadQuestion(question.variable_id);
@@ -1695,31 +1706,21 @@ function App() {
               </div>
             </section>
 
+            <section className="setup-row">
+              <div className="setup-label"><span>02</span><strong>{bi(locale, "Analysis", "分析內容")}</strong></div>
+              <div className="setup-control">
+                {draft.target_kind === "response_set" ? <button className="analysis-option active"><strong>{bi(locale, "Multiple-response selection rate", "多選題選擇率")}</strong><small>{bi(locale, "Share of respondents mentioning each option", "每個選項被提及的受訪者比例")}</small></button> : <div className="analysis-options">{analysisOptions.map((option) => <button key={option.id} className={`analysis-option ${draft.mode === option.mode && draft.operation === option.operation ? "active" : ""}`} onClick={() => choosePrimaryAnalysis(option)}><strong>{option.label}</strong><small>{option.description}</small></button>)}</div>}
+              </div>
+            </section>
+
             <section className="setup-row compact-row">
-              <div className="setup-label"><span>02</span><strong>{bi(locale, "Result layout", "結果呈現")}</strong></div>
-              <div className={`setup-control presentation-settings ${draft.target_kind === "response_set" ? "with-response-position" : ""}`}>
+              <div className="setup-label"><span>03</span><strong>{bi(locale, "Result layout", "結果呈現")}</strong></div>
+              <div className="setup-control presentation-settings">
                 <div className="presentation-setting">
                   <span className="control-label">{bi(locale, "Split result", "拆分方式")}</span>
                   <div className="grouping-options">{displayGroupingOptions.map((grouping) => <button key={grouping} className={draft.grouping === grouping ? "active" : ""} onClick={() => chooseGrouping(grouping)}>{GROUPING_LABELS[locale][grouping]}</button>)}</div>
                   <small className="automatic-note">{bi(locale, "Selected from the current scope; you can adjust it.", "依目前範圍選擇，可自行調整。")}</small>
                 </div>
-                {draft.target_kind === "response_set" && (
-                  <div className="presentation-setting">
-                    <span className="control-label">{bi(locale, "Response position", "回答順位")}</span>
-                    <div className="response-scope">
-                      <button className={draft.response_scope === "any_member" ? "active" : ""} onClick={() => setDraft((current) => patchDraft(current, { response_scope: "any_member", member_order: null }))}>{bi(locale, "Any response position", "任一回答順位")}</button>
-                      <button className={draft.response_scope === "specific_member" ? "active" : ""} onClick={() => setDraft((current) => patchDraft(current, { response_scope: "specific_member", member_order: 1 }))}>{bi(locale, "Specific response position", "指定回答順位")}</button>
-                      {draft.response_scope === "specific_member" && <select value={draft.member_order ?? 1} onChange={(event) => setDraft((current) => patchDraft(current, { member_order: Number(event.target.value) }))}>{responseSetDetail?.members.map((member) => <option key={member.member_order} value={member.member_order}>{bi(locale, `Response ${member.member_order}`, `第 ${member.member_order} 回答`)}</option>)}</select>}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </section>
-
-            <section className="setup-row">
-              <div className="setup-label"><span>03</span><strong>{bi(locale, "Analysis", "分析內容")}</strong></div>
-              <div className="setup-control">
-                {draft.target_kind === "response_set" ? <button className="analysis-option active"><strong>{bi(locale, "Multiple-response selection rate", "多選題選擇率")}</strong><small>{bi(locale, "Share of respondents mentioning each option", "每個選項被提及的受訪者比例")}</small></button> : <div className="analysis-options">{analysisOptions.map((option) => <button key={option.id} className={`analysis-option ${draft.mode === option.mode && draft.operation === option.operation ? "active" : ""}`} onClick={() => choosePrimaryAnalysis(option)}><strong>{option.label}</strong><small>{option.description}</small></button>)}</div>}
               </div>
             </section>
 
@@ -1732,7 +1733,19 @@ function App() {
           </section>
           }
 
-          {result && <ResultWorkspace key={`${result.draft.target_id ?? "none"}:${result.statistic ?? result.result.result_type}`} envelope={result} details={resultDetails} bootstrap={bootstrap} currentRevision={draft.revision} tab={resultTab} onTab={setResultTab} locale={locale} />}
+          {result && <ResultWorkspace
+            key={`${result.draft.target_id ?? "none"}:${result.statistic ?? result.result.result_type}`}
+            envelope={result}
+            details={resultDetails}
+            bootstrap={bootstrap}
+            currentRevision={draft.revision}
+            currentResponseScope={draft.response_scope}
+            currentMemberOrder={draft.member_order}
+            onResponsePosition={chooseResponsePosition}
+            tab={resultTab}
+            onTab={setResultTab}
+            locale={locale}
+          />}
         </>}
         {surface === "workbench" && (
           <JournalFeed
@@ -2111,7 +2124,29 @@ function ScalePanel({ detail, locale }: { detail: QuestionDetail; locale: Locale
   return <section className="scale-panel"><header><div><span className="section-kicker">{bi(locale, "Response scale", "完整量表")}</span><strong>{bi(locale, `Value settings for ${detail.variable_id}`, `${detail.variable_id} 的數值設定`)}</strong></div><span>{detail.scale.length} {bi(locale, "raw values", "個原始值")}</span></header><div className="table-wrap"><table><thead><tr><th>{bi(locale, "Raw value", "原始值")}</th><th>{bi(locale, "Response label", "回答標籤")}</th><th>{bi(locale, "Ordinal position", "順序位置")}</th><th>{bi(locale, "Continuous score", "連續分數")}</th></tr></thead><tbody>{detail.scale.map((value) => <tr key={value.raw_value_key} className={value.category_status === "excluded" ? "excluded" : ""}><td>{value.raw_value_key}</td><td>{value.category_label}</td><td>{value.order_status === "included" ? value.order_position : "—"}</td><td>{value.continuous_status === "included" ? formatNumber(value.continuous_score, 2, locale) : "—"}</td></tr>)}</tbody></table></div></section>;
 }
 
-const ResultWorkspace = memo(function ResultWorkspace({ envelope, details, bootstrap, currentRevision, tab, onTab, locale }: { envelope: AnalysisEnvelope; details: ResultDetails; bootstrap: Bootstrap; currentRevision: number; tab: ResultTab; onTab: (tab: ResultTab) => void; locale: Locale }) {
+const ResultWorkspace = memo(function ResultWorkspace({
+  envelope,
+  details,
+  bootstrap,
+  currentRevision,
+  currentResponseScope,
+  currentMemberOrder,
+  onResponsePosition,
+  tab,
+  onTab,
+  locale,
+}: {
+  envelope: AnalysisEnvelope;
+  details: ResultDetails;
+  bootstrap: Bootstrap;
+  currentRevision: number;
+  currentResponseScope: Draft["response_scope"];
+  currentMemberOrder: number | null;
+  onResponsePosition: (responseScope: Draft["response_scope"], memberOrder: number | null) => void;
+  tab: ResultTab;
+  onTab: (tab: ResultTab) => void;
+  locale: Locale;
+}) {
   const draft = envelope.draft;
   const question = bootstrap.questions.find((item) => item.variable_id === draft.target_id);
   const responseSet = bootstrap.response_sets.find((item) => item.response_set_id === draft.target_id);
@@ -2174,13 +2209,45 @@ const ResultWorkspace = memo(function ResultWorkspace({ envelope, details, boots
         <button className={tab === "chart" ? "active" : ""} onClick={() => onTab("chart")}><BarChart3 size={16} />{bi(locale, "Chart", "圖表")}</button>
         <button className={tab === "table" ? "active" : ""} onClick={() => onTab("table")}><Table2 size={16} />{bi(locale, "Data", "資料")}</button>
       </div>
-      {tab === "chart" && (availableMetrics.length > 1 || canRotateLayout) && (
+      {tab === "chart" && (availableMetrics.length > 1 || canRotateLayout || responseSet) && (
         <div className="chart-controls">
           {availableMetrics.length > 1 && (
             <div>
               <span>{bi(locale, "Chart metric", "圖表指標")}</span>
               <div className="chart-control-buttons">
                 {availableMetrics.map((item) => <button key={item} className={chartMetric === item ? "active" : ""} onClick={() => setChartMetric(item)}>{STATISTIC_LABELS[locale][item]}</button>)}
+              </div>
+            </div>
+          )}
+          {responseSet && (
+            <div>
+              <span>{bi(locale, "Response position", "回答順位")}</span>
+              <div className="chart-control-buttons">
+                <button
+                  className={currentResponseScope === "any_member" ? "active" : ""}
+                  onClick={() => onResponsePosition("any_member", null)}
+                >
+                  {bi(locale, "Any response position", "任一回答順位")}
+                </button>
+                <button
+                  className={currentResponseScope === "specific_member" ? "active" : ""}
+                  onClick={() => onResponsePosition("specific_member", currentMemberOrder ?? 1)}
+                >
+                  {bi(locale, "Specific response position", "指定回答順位")}
+                </button>
+                {currentResponseScope === "specific_member" && (
+                  <select
+                    aria-label={bi(locale, "Choose response position", "選擇回答順位")}
+                    value={currentMemberOrder ?? 1}
+                    onChange={(event) => onResponsePosition("specific_member", Number(event.target.value))}
+                  >
+                    {Array.from({ length: responseSet.member_count }, (_, index) => index + 1).map((memberOrder) => (
+                      <option key={memberOrder} value={memberOrder}>
+                        {bi(locale, `Response ${memberOrder}`, `第 ${memberOrder} 回答`)}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
             </div>
           )}
