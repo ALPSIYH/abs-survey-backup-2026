@@ -590,16 +590,8 @@ export function analysisContract(
 }
 
 function App() {
-  const [locale, setLocale] = useState<Locale>(() => {
-    if (typeof window === "undefined") return DEFAULT_LOCALE;
-    const stored = window.localStorage.getItem("abs-public-locale");
-    return stored === "zh-Hant" ? "zh-Hant" : DEFAULT_LOCALE;
-  });
-  const [fontSize, setFontSize] = useState<FontSize>(() => {
-    if (typeof window === "undefined") return "standard";
-    const stored = window.localStorage.getItem("abs-public-font-size");
-    return stored === "small" || stored === "large" ? stored : "standard";
-  });
+  const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
+  const [fontSize, setFontSize] = useState<FontSize>("standard");
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [draft, commitDraftState] = useState<Draft>(EMPTY_DRAFT);
   const [detail, setDetail] = useState<QuestionDetail | null>(null);
@@ -621,11 +613,7 @@ function App() {
   const [basisChosen, setBasisChosen] = useState(true);
   const [showScale, setShowScale] = useState(false);
   const [showMissingContexts, setShowMissingContexts] = useState(false);
-  const [surface, setSurface] = useState<WorkspaceSurface>(() => {
-    if (typeof window === "undefined") return "conversation";
-    const requested = new URLSearchParams(window.location.search).get("view");
-    return requested === "workbench" ? "workbench" : "conversation";
-  });
+  const [surface, setSurface] = useState<WorkspaceSurface>("workbench");
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -663,6 +651,25 @@ function App() {
     setRunning(false);
     commitDraftState(next);
   }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams(window.location.search);
+      const requestedLocale = params.get("lang");
+      const requestedSurface = params.get("view");
+      const storedFontSize = window.localStorage.getItem("abs-public-font-size");
+      if (requestedLocale === "zh-Hant" || requestedLocale === "zh") {
+        setLocale("zh-Hant");
+      }
+      if (requestedSurface === "conversation") {
+        setSurface("conversation");
+      }
+      if (storedFontSize === "small" || storedFontSize === "large") {
+        setFontSize(storedFontSize);
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     document.documentElement.lang = locale === "en" ? "en" : "zh-Hant";
@@ -1404,10 +1411,21 @@ function App() {
   function chooseSurface(next: WorkspaceSurface): void {
     setSurface(next);
     const url = new URL(window.location.href);
-    if (next === "conversation") {
+    if (next === "workbench") {
       url.searchParams.delete("view");
     } else {
       url.searchParams.set("view", next);
+    }
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+
+  function chooseLocale(next: Locale): void {
+    setLocale(next);
+    const url = new URL(window.location.href);
+    if (next === DEFAULT_LOCALE) {
+      url.searchParams.delete("lang");
+    } else {
+      url.searchParams.set("lang", next);
     }
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }
@@ -1514,8 +1532,8 @@ function App() {
         </nav>
         <div className="public-controls">
           <div className="language-control" role="group" aria-label={bi(locale, "Language", "語言")}>
-            <button className={locale === "en" ? "active" : ""} onClick={() => setLocale("en")}>EN</button>
-            <button className={locale === "zh-Hant" ? "active" : ""} onClick={() => setLocale("zh-Hant")}>中文</button>
+            <button className={locale === "en" ? "active" : ""} onClick={() => chooseLocale("en")}>EN</button>
+            <button className={locale === "zh-Hant" ? "active" : ""} onClick={() => chooseLocale("zh-Hant")}>中文</button>
           </div>
           <div className="font-control" role="group" aria-label={bi(locale, "Text size", "字體大小")}>
             {(["small", "standard", "large"] as const).map((size, index) => (
@@ -1772,7 +1790,11 @@ function App() {
 
       <aside className="assistant-panel" aria-busy={assistantBusy}>
         <div className="assistant-heading">
-          <div><Bot size={19} /><span><strong>{bi(locale, "Analysis assistant", "分析助理")}</strong><small>{bootstrap.assistant.available ? bi(locale, "Cloud catalog and statistics connected", "雲端題庫與統計已連線") : bi(locale, "Manual analysis remains available", "仍可使用手動分析")}</small></span></div>
+          <div><Bot size={19} /><span><strong>{bi(locale, "Analysis assistant", "分析助理")}</strong><small>{bootstrap.assistant.available
+            ? bootstrap.assistant.provider === "direct_ollama"
+              ? bi(locale, "Local model and verified statistics connected", "本機模型與統計已連線")
+              : bi(locale, "Cloud catalog and statistics connected", "雲端題庫與統計已連線")
+            : bi(locale, "Manual analysis remains available", "仍可使用手動分析")}</small></span></div>
           <div className="assistant-actions">
             <i className={bootstrap.assistant.available ? "online" : "offline"} />
             {surface === "conversation" ? (

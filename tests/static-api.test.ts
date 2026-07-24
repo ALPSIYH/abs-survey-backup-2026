@@ -28,6 +28,11 @@ globalThis.fetch = async (input: string | URL | Request): Promise<Response> => {
 
 const { api, catalogMatch } = await import("../app/api");
 const { localizeAssistantMessage, localizeOptionLabel } = await import("../app/i18n");
+const {
+  applyRerankOrder,
+  maybeRerankQuestions,
+  rerankRespectsExplicitRoles,
+} = await import("../app/local-rerank");
 
 function draft(
   overrides: Partial<Parameters<typeof api.analyze>[0]> = {},
@@ -112,6 +117,109 @@ test("catalog search returns a ranked complete candidate pool", async () => {
   );
   assert.ok(["q177", "q178"].includes(chinaInfluence.questions[0]?.variable_id));
   assert.equal(chinaInfluence.questions[0]?.match_band, "high");
+});
+
+test("local rerank output can only reorder grounded candidates", async () => {
+  const data = await api.bootstrap();
+  const candidates = ["q91", "q95", "q96"]
+    .map((id) => data.questions.find((question) => question.variable_id === id))
+    .filter((question): question is NonNullable<typeof question> => Boolean(question));
+  assert.deepEqual(
+    applyRerankOrder(candidates, ["q96", "q96", "q999", "q95"]).map(
+      (question) => question.variable_id,
+    ),
+    ["q96", "q95", "q91"],
+  );
+});
+
+test("local rerank only overrides the baseline at high confidence", async () => {
+  const data = await api.bootstrap();
+  const candidates = ["q91", "q96"]
+    .map((id) => data.questions.find((question) => question.variable_id === id))
+    .filter((question): question is NonNullable<typeof question> => Boolean(question));
+  let responseMode: "high" | "medium" | "invalid" = "high";
+  const fakeWindow = {
+    fetch: async (_input: string, init?: RequestInit) => {
+      if (!init?.method) {
+        return Response.json({ available: true, model: "gemma4:26b-mlx" });
+      }
+      if (responseMode === "high") {
+        return Response.json({
+          model: "gemma4:26b-mlx",
+          confidence: "high",
+          candidate_ids: ["q96"],
+          elapsed_ms: 50,
+        });
+      }
+      if (responseMode === "medium") {
+        return Response.json({
+          model: "gemma4:26b-mlx",
+          confidence: "medium",
+          candidate_ids: ["q96"],
+          elapsed_ms: 50,
+        });
+      }
+      return Response.json({
+        model: "gemma4:26b-mlx",
+        confidence: "high",
+        candidate_ids: ["q999"],
+        elapsed_ms: 50,
+      });
+    },
+    setTimeout: globalThis.setTimeout,
+    clearTimeout: globalThis.clearTimeout,
+  };
+  Object.defineProperty(globalThis, "window", {
+    value: fakeWindow,
+    configurable: true,
+  });
+  try {
+    assert.deepEqual(
+      (await maybeRerankQuestions("high confidence test", candidates)).map(
+        (question) => question.variable_id,
+      ),
+      ["q96", "q91"],
+    );
+    responseMode = "medium";
+    assert.deepEqual(
+      (await maybeRerankQuestions("medium confidence test", candidates)).map(
+        (question) => question.variable_id,
+      ),
+      ["q91", "q96"],
+    );
+    responseMode = "invalid";
+    assert.deepEqual(
+      (await maybeRerankQuestions("invalid candidate test", candidates)).map(
+        (question) => question.variable_id,
+      ),
+      ["q91", "q96"],
+    );
+  } finally {
+    Reflect.deleteProperty(globalThis, "window");
+  }
+});
+
+test("local rerank cannot replace an explicit own-country question with a named country", async () => {
+  const data = await api.bootstrap();
+  const candidates = ["q96", "q129"]
+    .map((id) => data.questions.find((question) => question.variable_id === id))
+    .filter((question): question is NonNullable<typeof question> => Boolean(question));
+  assert.equal(
+    rerankRespectsExplicitRoles(
+      "日本受訪者認為自己的國家有多民主",
+      candidates,
+      ["q129", "q96"],
+    ),
+    false,
+  );
+  assert.equal(
+    rerankRespectsExplicitRoles(
+      "韓國受訪者如何評價日本的民主程度",
+      candidates,
+      ["q129", "q96"],
+    ),
+    true,
+  );
 });
 
 test("continuous summaries reproduce aggregate q95 values", async () => {

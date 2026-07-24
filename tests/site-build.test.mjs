@@ -39,6 +39,32 @@ test("server-renders the finished survey explorer", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|SkeletonPreview/);
 });
 
+test("public deployment cannot invoke the local model route", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("local-route-test", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const response = await worker.fetch(
+    new Request("https://survey.example/api/local-rerank", {
+      headers: {
+        accept: "application/json",
+        host: "survey.example",
+        "x-forwarded-host": "survey.example",
+        "x-forwarded-proto": "https",
+      },
+    }),
+    {
+      ASSETS: {
+        fetch: async () => new Response("Not found", { status: 404 }),
+      },
+    },
+    {
+      waitUntil() {},
+      passThroughOnException() {},
+    },
+  );
+  assert.equal(response.status, 503);
+});
+
 test("packages the complete aggregate-only cloud dataset", async () => {
   const [catalogText, manifestText, questionFiles, responseSetFiles] = await Promise.all([
     readFile(new URL("../public/data/catalog.json", import.meta.url), "utf8"),

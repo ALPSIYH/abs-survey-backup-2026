@@ -28,6 +28,7 @@ import type {
   ResultRow,
   StatisticalView,
 } from "./types";
+import { localAssistantStatus, maybeRerankQuestions } from "./local-rerank";
 
 interface StaticResponseSetCatalog {
   id: string;
@@ -897,7 +898,19 @@ async function catalogSearch(query: string, limit = 199): Promise<CatalogSearchR
   const questions = matches
     .slice(0, limit)
     .map(({ item }) => item);
-  return { query, total: matches.length, questions };
+  const requestedStatistic = parseStatistic(query);
+  const compatible = requestedStatistic
+    ? questions.filter((questionItem) =>
+        statisticSupportedBy(questionItem, requestedStatistic),
+      )
+    : questions;
+  const reranked = await maybeRerankQuestions(query, compatible, normalizeQuery(query));
+  const compatibleIds = new Set(reranked.map((questionItem) => questionItem.variable_id));
+  const merged = [
+    ...reranked,
+    ...questions.filter((questionItem) => !compatibleIds.has(questionItem.variable_id)),
+  ];
+  return { query, total: matches.length, questions: merged };
 }
 
 function parseStatistic(message: string): Statistic | null {
@@ -1798,12 +1811,7 @@ export const api = {
   catalogSearch,
   question,
   responseSet,
-  assistantStatus: async (): Promise<AssistantStatus> => ({
-    provider: "offline",
-    available: true,
-    label: "Cloud catalog and statistics",
-    detail: "Deterministic survey planning with aggregate cloud analysis",
-  }),
+  assistantStatus: async (): Promise<AssistantStatus> => localAssistantStatus(),
   analyze,
   validate: async (draft: Draft) => ({
     valid: true as const,
