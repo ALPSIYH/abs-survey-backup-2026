@@ -543,6 +543,16 @@ function contextSummary(draft: Draft, countries: Country[], locale: Locale): str
   return `${countryLabels || bi(locale, "No country selected", "未選國家")} · ${waves || bi(locale, "No wave selected", "未選波次")}`;
 }
 
+function compactContextSummary(draft: Draft, countries: Country[], locale: Locale): string {
+  const country = draft.countries.length === 1
+    ? countries.find((item) => item.country_code === draft.countries[0])?.display_name ?? String(draft.countries[0])
+    : bi(locale, `${draft.countries.length} countries or territories`, `${draft.countries.length} 個國家或地區`);
+  const wave = draft.waves.length === 1
+    ? `W${draft.waves[0]}`
+    : bi(locale, `${draft.waves.length} waves`, `${draft.waves.length} 個波次`);
+  return `${country} · ${wave}`;
+}
+
 export function analysisContract(
   draft: Draft,
   bootstrap: Bootstrap,
@@ -1686,22 +1696,39 @@ function App() {
             </section>
 
             <section className="setup-row compact-row">
-              <div className="setup-label"><span>02</span><strong>{bi(locale, "Split result", "結果拆分")}</strong></div>
-              <div className="setup-control"><div className="grouping-options">{displayGroupingOptions.map((grouping) => <button key={grouping} className={draft.grouping === grouping ? "active" : ""} onClick={() => chooseGrouping(grouping)}>{GROUPING_LABELS[locale][grouping]}</button>)}</div><small className="automatic-note">{bi(locale, "Selected automatically from the current scope; you can adjust it.", "依目前範圍自動選擇，可自行調整。")}</small></div>
+              <div className="setup-label"><span>02</span><strong>{bi(locale, "Result layout", "結果呈現")}</strong></div>
+              <div className={`setup-control presentation-settings ${draft.target_kind === "response_set" ? "with-response-position" : ""}`}>
+                <div className="presentation-setting">
+                  <span className="control-label">{bi(locale, "Split result", "拆分方式")}</span>
+                  <div className="grouping-options">{displayGroupingOptions.map((grouping) => <button key={grouping} className={draft.grouping === grouping ? "active" : ""} onClick={() => chooseGrouping(grouping)}>{GROUPING_LABELS[locale][grouping]}</button>)}</div>
+                  <small className="automatic-note">{bi(locale, "Selected from the current scope; you can adjust it.", "依目前範圍選擇，可自行調整。")}</small>
+                </div>
+                {draft.target_kind === "response_set" && (
+                  <div className="presentation-setting">
+                    <span className="control-label">{bi(locale, "Response position", "回答順位")}</span>
+                    <div className="response-scope">
+                      <button className={draft.response_scope === "any_member" ? "active" : ""} onClick={() => setDraft((current) => patchDraft(current, { response_scope: "any_member", member_order: null }))}>{bi(locale, "Any response position", "任一回答順位")}</button>
+                      <button className={draft.response_scope === "specific_member" ? "active" : ""} onClick={() => setDraft((current) => patchDraft(current, { response_scope: "specific_member", member_order: 1 }))}>{bi(locale, "Specific response position", "指定回答順位")}</button>
+                      {draft.response_scope === "specific_member" && <select value={draft.member_order ?? 1} onChange={(event) => setDraft((current) => patchDraft(current, { member_order: Number(event.target.value) }))}>{responseSetDetail?.members.map((member) => <option key={member.member_order} value={member.member_order}>{bi(locale, `Response ${member.member_order}`, `第 ${member.member_order} 回答`)}</option>)}</select>}
+                    </div>
+                  </div>
+                )}
+              </div>
             </section>
 
             <section className="setup-row">
               <div className="setup-label"><span>03</span><strong>{bi(locale, "Analysis", "分析內容")}</strong></div>
               <div className="setup-control">
                 {draft.target_kind === "response_set" ? <button className="analysis-option active"><strong>{bi(locale, "Multiple-response selection rate", "多選題選擇率")}</strong><small>{bi(locale, "Share of respondents mentioning each option", "每個選項被提及的受訪者比例")}</small></button> : <div className="analysis-options">{analysisOptions.map((option) => <button key={option.id} className={`analysis-option ${draft.mode === option.mode && draft.operation === option.operation ? "active" : ""}`} onClick={() => choosePrimaryAnalysis(option)}><strong>{option.label}</strong><small>{option.description}</small></button>)}</div>}
-                {draft.target_kind === "response_set" && <div className="response-scope"><button className={draft.response_scope === "any_member" ? "active" : ""} onClick={() => setDraft((current) => patchDraft(current, { response_scope: "any_member", member_order: null }))}>{bi(locale, "Any response position", "任一回答順位")}</button><button className={draft.response_scope === "specific_member" ? "active" : ""} onClick={() => setDraft((current) => patchDraft(current, { response_scope: "specific_member", member_order: 1 }))}>{bi(locale, "Specific response position", "指定回答順位")}</button>{draft.response_scope === "specific_member" && <select value={draft.member_order ?? 1} onChange={(event) => setDraft((current) => patchDraft(current, { member_order: Number(event.target.value) }))}>{responseSetDetail?.members.map((member) => <option key={member.member_order} value={member.member_order}>{bi(locale, `Response ${member.member_order}`, `第 ${member.member_order} 回答`)}</option>)}</select>}</div>}
               </div>
             </section>
 
-            <footer className="setup-footer">
-              <div>{readinessIssues.length ? <div className="issue-list">{readinessIssues.map((issue) => <span key={issue}><CircleHelp size={14} />{issue}</span>)}</div> : <p>{analysisContract(draft, bootstrap, locale)}</p>}</div>
-              {running && <div className="auto-result-state updating" role="status"><LoaderCircle className="spin" size={16} /><strong>{bi(locale, "Updating result…", "正在更新結果…")}</strong></div>}
-            </footer>
+            {(readinessIssues.length > 0 || running) && (
+              <footer className="setup-footer">
+                {readinessIssues.length > 0 && <div className="issue-list">{readinessIssues.map((issue) => <span key={issue}><CircleHelp size={14} />{issue}</span>)}</div>}
+                {running && <div className="auto-result-state updating" role="status"><LoaderCircle className="spin" size={16} /><strong>{bi(locale, "Updating result…", "正在更新結果…")}</strong></div>}
+              </footer>
+            )}
           </section>
           }
 
@@ -2138,7 +2165,7 @@ const ResultWorkspace = memo(function ResultWorkspace({ envelope, details, boots
               <small>{draft.secondary_mode ? MODE_LABELS[locale][draft.secondary_mode] : ""}</small>
             </div>
           )}
-          <p>{metric} · {contextSummary(draft, bootstrap.countries, locale)} · {GROUPING_LABELS[locale][draft.grouping]}</p>
+          <p>{metric} · {compactContextSummary(draft, bootstrap.countries, locale)} · {GROUPING_LABELS[locale][draft.grouping]}</p>
         </div>
         <span className="result-badge">{bi(locale, "Descriptive result", "描述性結果")}</span>
       </header>
