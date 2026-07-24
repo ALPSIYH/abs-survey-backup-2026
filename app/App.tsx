@@ -1547,7 +1547,7 @@ function App() {
           <button className={catalogKind === "questions" ? "active" : ""} onClick={() => { setCatalogKind("questions"); setQuery(""); }}>{bi(locale, "Questions", "單題")}</button>
           <button className={catalogKind === "response_sets" ? "active" : ""} onClick={() => { setCatalogKind("response_sets"); setQuery(""); }}>{bi(locale, "Response sets", "多選題組")}</button>
         </div>
-        <label className="search-box">{semanticSearchBusy ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />}<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={bi(locale, "Search question ID, wording, or topic", "搜尋題號、題目或主題")} />{query && <button aria-label={bi(locale, "Clear search", "清除搜尋")} title={bi(locale, "Clear search", "清除搜尋")} onClick={() => setQuery("")}><X size={14} /></button>}</label>
+        <label className="search-box">{semanticSearchBusy ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />}<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={bi(locale, "Search questions or topics", "搜尋題號、題目或主題")} />{query && <button aria-label={bi(locale, "Clear search", "清除搜尋")} title={bi(locale, "Clear search", "清除搜尋")} onClick={() => setQuery("")}><X size={14} /></button>}</label>
         <label className="topic-filter">
           <ListFilter size={15} />
           <span>{bi(locale, "Topic", "主題")}</span>
