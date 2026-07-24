@@ -22,7 +22,6 @@ import {
   MessageSquareText,
   Minimize2,
   Plus,
-  Play,
   RotateCcw,
   Search,
   Send,
@@ -265,6 +264,7 @@ function questionOptionParts(
 ): {
   questionId: string;
   questionText: string;
+  topic: string;
   waves: string;
 } {
   const cleaned = cleanMarkdown(option.label);
@@ -281,6 +281,7 @@ function questionOptionParts(
   return {
     questionId,
     questionText: match?.[2] ?? cleaned,
+    topic: question ? topicLabel(locale, question.topic_id, question.topic_label) : "",
     waves: describedWaves || metadataWaves,
   };
 }
@@ -321,16 +322,37 @@ function primaryAnalysisOptions(question: Question | null, locale: Locale): Prim
   return options;
 }
 
-export function matchesQuestion(question: Question, query: string): boolean {
+export function questionMatchScore(question: Question, query: string): number {
   const trimmed = query.trim();
-  if (!trimmed) return true;
+  if (!trimmed) return 1;
   if (/^q\d+(?:\.\d+)?$/i.test(trimmed)) {
-    return question.variable_id.toLowerCase() === trimmed.toLowerCase();
+    return question.variable_id.toLowerCase() === trimmed.toLowerCase() ? 10_000 : 0;
   }
-  const haystack = `${question.variable_id} ${question.question_text}`.toLowerCase();
-  const normalized = trimmed.toLowerCase();
+  const normalized = trimmed.normalize("NFKC").toLowerCase();
+  const questionText = question.question_text.normalize("NFKC").toLowerCase();
+  const topicText = `${question.topic_id} ${question.topic_label}`.normalize("NFKC").toLowerCase();
   const english = normalized.match(/[a-z0-9.]+/g) ?? [];
-  return english.length > 0 && english.every((term) => haystack.includes(term));
+  if (!english.length) return 0;
+  let score = questionText.includes(normalized) ? 500 + normalized.length * 3 : 0;
+  let matched = 0;
+  for (const term of english) {
+    if (question.variable_id.toLowerCase() === term) {
+      score += 1_000;
+      matched += 1;
+    } else if (questionText.includes(term)) {
+      score += 40 + term.length * 5 + (questionText.startsWith(term) ? 20 : 0);
+      matched += 1;
+    } else if (topicText.includes(term)) {
+      score += 14 + term.length * 2;
+      matched += 1;
+    }
+  }
+  if (matched !== english.length) return 0;
+  return score + 160;
+}
+
+export function matchesQuestion(question: Question, query: string): boolean {
+  return questionMatchScore(question, query) > 0;
 }
 
 export function needsSemanticCatalogSearch(query: string): boolean {
@@ -466,6 +488,25 @@ function patchDraft(draft: Draft, changes: Partial<Draft>): Draft {
     : { ...next, revision: draft.revision + 1 };
 }
 
+function analysisRequestKey(draft: Draft): string {
+  return JSON.stringify({
+    target_kind: draft.target_kind,
+    target_id: draft.target_id,
+    mode: draft.mode,
+    operation: draft.operation,
+    countries: draft.countries,
+    waves: draft.waves,
+    grouping: draft.grouping,
+    coverage_policy: draft.coverage_policy,
+    weighted: draft.weighted,
+    secondary_id: draft.secondary_id,
+    secondary_mode: draft.secondary_mode,
+    percentage_basis: draft.percentage_basis,
+    response_scope: draft.response_scope,
+    member_order: draft.member_order,
+  });
+}
+
 function responseSetMatches(responseSet: ResponseSet, query: string): boolean {
   if (!query.trim()) return true;
   const haystack = `${responseSet.response_set_id} ${responseSet.label}`.toLowerCase();
@@ -584,6 +625,7 @@ function App() {
   const [pendingOptionId, setPendingOptionId] = useState<string | null>(null);
   const [assistantQueued, setAssistantQueued] = useState<string | null>(null);
   const [conversation, setConversation] = useState<ConversationResponse | null>(null);
+  const [candidateVisibleCount, setCandidateVisibleCount] = useState(10);
   const [openSuggestionEditor, setOpenSuggestionEditor] = useState<string | null>(null);
   const [suggestionValues, setSuggestionValues] = useState<string[]>([]);
   const [journal, setJournal] = useState<JournalEntry[]>([]);
@@ -597,8 +639,14 @@ function App() {
   const lastFailedAction = useRef<(() => void) | null>(null);
   const semanticSearchSequence = useRef(0);
   const semanticSearchCache = useRef(new Map<string, string[]>());
+  const analysisSequence = useRef(0);
+  const lastAutomaticAnalysisKey = useRef<string | null>(null);
 
-  useEffect(() => { draftRef.current = draft; }, [draft]);
+  useEffect(() => {
+    draftRef.current = draft;
+    analysisSequence.current += 1;
+    setRunning(false);
+  }, [draft]);
 
   useEffect(() => {
     document.documentElement.lang = locale === "en" ? "en" : "zh-Hant";
@@ -616,6 +664,10 @@ function App() {
   }, [conversation?.revision]);
 
   useEffect(() => {
+    setCandidateVisibleCount(10);
+  }, [conversation?.pending?.pending_id]);
+
+  useEffect(() => {
     if (!assistantBusy) {
       setShowAssistantProgress(false);
       return;
@@ -623,10 +675,6 @@ function App() {
     const timer = window.setTimeout(() => setShowAssistantProgress(true), 250);
     return () => window.clearTimeout(timer);
   }, [assistantBusy]);
-
-  useEffect(() => {
-    if (result && result.draft.revision !== draft.revision) setResult(null);
-  }, [draft.revision, result]);
 
   useEffect(() => {
     api.bootstrap()
@@ -717,10 +765,22 @@ function App() {
           - (rank.get(right.variable_id) ?? Number.MAX_SAFE_INTEGER),
         );
     }
-    return bootstrap.questions.filter((question) =>
-      matchesQuestion(question, query)
-      && (topicFilter === "all" || question.topic_id === topicFilter),
-    );
+    return bootstrap.questions
+      .map((question, position) => ({
+        question,
+        position,
+        score: questionMatchScore(question, query),
+      }))
+      .filter(({ question, score }) =>
+        score > 0
+        && (topicFilter === "all" || question.topic_id === topicFilter),
+      )
+      .sort((left, right) =>
+        search
+          ? right.score - left.score || left.position - right.position
+          : left.position - right.position,
+      )
+      .map(({ question }) => question);
   }, [
     bootstrap,
     query,
@@ -741,36 +801,53 @@ function App() {
   const selectedResponseSet = bootstrap?.response_sets.find((item) => item.response_set_id === draft.target_id) ?? null;
 
   useEffect(() => {
-    if (!draft.operation || groupingManual || needsSecondary(draft)) return;
+    if (
+      groupingManual
+      || needsSecondary(draft)
+      || !draft.countries.length
+      || !draft.waves.length
+    ) {
+      return;
+    }
     const inferred: Grouping = draft.countries.length > 1 && draft.waves.length > 1
-      ? "country_wave"
+      ? draft.operation === "distribution" || draft.operation === "multi_response"
+        ? "wave"
+        : "country_wave"
       : draft.countries.length > 1
         ? "country"
         : draft.waves.length > 1 ? "wave" : "none";
+    setComparisonChosen(true);
     if (draft.grouping !== inferred) {
       setDraft((current) => patchDraft(current, { grouping: inferred }));
     }
-  }, [draft.operation, draft.countries.length, draft.waves.length, draft.grouping, groupingManual]);
+  }, [
+    draft.operation,
+    draft.countries.length,
+    draft.waves.length,
+    draft.grouping,
+    groupingManual,
+  ]);
 
   async function selectQuestion(question: Question): Promise<void> {
     const sequence = ++selectionSequence.current;
     setError(null);
+    setDetail(detailCache.current.get(question.variable_id) ?? null);
+    setResponseSetDetail(null);
+    setSecondaryDetail(null);
+    setShowScale(false);
+    setComparisonChosen(false);
+    setGroupingManual(false);
+    setBasisChosen(true);
+    setDraft({
+      ...EMPTY_DRAFT,
+      target_id: question.variable_id,
+      revision: draftRef.current.revision + 1,
+    });
+    setResult(null);
     try {
       const loaded = await loadQuestion(question.variable_id);
       if (sequence !== selectionSequence.current) return;
       setDetail(loaded);
-      setResponseSetDetail(null);
-      setSecondaryDetail(null);
-      setShowScale(false);
-      setComparisonChosen(false);
-      setGroupingManual(false);
-      setBasisChosen(true);
-      setDraft({
-        ...EMPTY_DRAFT,
-        target_id: question.variable_id,
-        revision: draftRef.current.revision + 1,
-      });
-      setResult(null);
     } catch (reason) {
       if (sequence === selectionSequence.current) {
         setError(reason instanceof Error ? reason.message : bi(locale, "Unable to load the question.", "無法載入題目"));
@@ -781,23 +858,24 @@ function App() {
   async function selectResponseSet(responseSet: ResponseSet): Promise<void> {
     const sequence = ++selectionSequence.current;
     setError(null);
+    setResponseSetDetail(null);
+    setDetail(null);
+    setSecondaryDetail(null);
+    setComparisonChosen(true);
+    setGroupingManual(false);
+    setBasisChosen(true);
+    setDraft({
+      ...EMPTY_DRAFT,
+      target_kind: "response_set",
+      target_id: responseSet.response_set_id,
+      operation: "multi_response",
+      revision: draftRef.current.revision + 1,
+    });
+    setResult(null);
     try {
       const loaded = await api.responseSet(responseSet.response_set_id);
       if (sequence !== selectionSequence.current) return;
       setResponseSetDetail(loaded);
-      setDetail(null);
-      setSecondaryDetail(null);
-      setComparisonChosen(true);
-      setGroupingManual(false);
-      setBasisChosen(true);
-      setDraft({
-        ...EMPTY_DRAFT,
-        target_kind: "response_set",
-        target_id: responseSet.response_set_id,
-        operation: "multi_response",
-        revision: draftRef.current.revision + 1,
-      });
-      setResult(null);
     } catch (reason) {
       if (sequence === selectionSequence.current) {
         setError(reason instanceof Error ? reason.message : bi(locale, "Unable to load the multiple-response set.", "無法載入多選題組"));
@@ -895,8 +973,8 @@ function App() {
         ? responseSetDetail.member_contexts[String(draft.member_order)] ?? []
         : responseSetDetail.contexts;
     }
-    if (!detail || !draft.mode) return [];
-    return detail.contexts[draft.mode] ?? [];
+    if (!detail) return [];
+    return draft.mode ? detail.contexts[draft.mode] ?? [] : detail.base_contexts;
   }, [draft.target_kind, draft.response_scope, draft.member_order, draft.mode, detail, responseSetDetail]);
 
   const commonContexts = useMemo(() => {
@@ -919,28 +997,20 @@ function App() {
       .map((country) => country.country_code),
   ), [availableCountries, commonContexts, draft.waves]);
 
-  const selectableCountryCodes = useMemo(() => (
-    availableCountries
-      .filter((country) => commonContexts.some((context) => (
-        context.country_code === country.country_code
-        && (!draft.waves.length || draft.waves.includes(context.wave))
-      )))
-      .map((country) => country.country_code)
-      .sort((a, b) => a - b)
-  ), [availableCountries, commonContexts, draft.waves]);
+  const selectableCountryCodes = useMemo(
+    () => availableCountries.map((country) => country.country_code).sort((a, b) => a - b),
+    [availableCountries],
+  );
 
   const availableWaves = useMemo(() => {
     if (!bootstrap) return [];
     return commonAvailableWaves(commonContexts, draft.countries, bootstrap.waves);
   }, [bootstrap, commonContexts, draft.countries]);
 
-  const selectableWaves = useMemo(() => {
-    if (!bootstrap) return [];
-    return bootstrap.waves.filter((wave) => commonContexts.some((context) => (
-      context.wave === wave
-      && (!draft.countries.length || draft.countries.includes(context.country_code))
-    )));
-  }, [bootstrap, commonContexts, draft.countries]);
+  const selectableWaves = useMemo(
+    () => bootstrap?.waves ?? [],
+    [bootstrap],
+  );
 
   const missingContexts = useMemo(
     () => missingScopeCells(commonContexts, draft.countries, draft.waves),
@@ -986,6 +1056,7 @@ function App() {
     if (draft.response_scope === "specific_member" && !draft.member_order) issues.push(bi(locale, "Choose a response position.", "請選擇回答順位。"));
     return issues;
   }, [draft, comparisonChosen, basisChosen, availableContextCount, locale]);
+  const analysisKey = useMemo(() => analysisRequestKey(draft), [draft]);
 
   const secondaryOptions = useMemo(() => {
     if (!bootstrap || !needsSecondary(draft)) return [];
@@ -1034,27 +1105,48 @@ function App() {
       setResultDetails({ primary, secondary: null });
     }
     setSecondaryDetail(null);
+    lastAutomaticAnalysisKey.current = analysisRequestKey(entry.envelope.draft);
     setDraft(entry.envelope.draft);
     setResult(entry.envelope);
   }
 
-  async function runAnalysis(): Promise<void> {
+  async function runAnalysis(expectedKey = analysisRequestKey(draftRef.current)): Promise<void> {
     if (readinessIssues.length) return;
+    const requestDraft = draftRef.current;
+    const requestSequence = ++analysisSequence.current;
     setRunning(true);
     setError(null);
     try {
-      const envelope = await api.analyze(draft);
+      const envelope = await api.analyze(requestDraft);
+      if (
+        requestSequence !== analysisSequence.current
+        || analysisRequestKey(draftRef.current) !== expectedKey
+      ) return;
+      lastAutomaticAnalysisKey.current = expectedKey;
       setResult(envelope);
       setResultDetails({ primary: detail, secondary: secondaryDetail });
       setResultTab("chart");
       recordJournalEntry(envelope, "workbench", OPERATION_LABELS[locale][envelope.result.result_type]);
     } catch (reason) {
-      lastFailedAction.current = () => runAnalysis();
+      if (requestSequence !== analysisSequence.current) return;
+      lastFailedAction.current = () => runAnalysis(expectedKey);
       setError(reason instanceof Error ? reason.message : bi(locale, "Analysis failed.", "分析失敗"));
     } finally {
-      setRunning(false);
+      if (requestSequence === analysisSequence.current) setRunning(false);
     }
   }
+
+  useEffect(() => {
+    if (
+      surface !== "workbench"
+      || readinessIssues.length
+      || lastAutomaticAnalysisKey.current === analysisKey
+    ) return;
+    const timer = window.setTimeout(() => {
+      void runAnalysis(analysisKey);
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [analysisKey, readinessIssues.length, surface]);
 
   async function applyConversationSnapshot(snapshot: ConversationSnapshot | null): Promise<void> {
     if (!snapshot || conversationSnapshotRef.current === snapshot.snapshot_id) return;
@@ -1067,6 +1159,7 @@ function App() {
     setSecondaryDetail(null);
     setComparisonChosen(true);
     setGroupingManual(true);
+    lastAutomaticAnalysisKey.current = analysisRequestKey(snapshot.draft);
     setDraft(snapshot.draft);
     setResult(conversationEnvelope(snapshot));
     setResultDetails({ primary, secondary: null });
@@ -1460,17 +1553,9 @@ function App() {
             <header className="setup-heading"><div><span className="section-kicker">{bi(locale, "Analysis settings", "分析設定")}</span><h2>{bi(locale, "Build a descriptive analysis", "建立描述性分析")}</h2></div><span className={readinessIssues.length ? "setup-state pending" : "setup-state ready"}>{readinessIssues.length ? `${readinessIssues.length} ${bi(locale, "items remaining", "項待完成")}` : bi(locale, "Ready", "可產生結果")}</span></header>
 
             <section className="setup-row">
-              <div className="setup-label"><span>01</span><strong>{bi(locale, "Analysis", "分析內容")}</strong></div>
-              <div className="setup-control">
-                {draft.target_kind === "response_set" ? <button className="analysis-option active"><strong>{bi(locale, "Multiple-response selection rate", "多選題選擇率")}</strong><small>{bi(locale, "Share of respondents mentioning each option", "每個選項被提及的受訪者比例")}</small></button> : <div className="analysis-options">{analysisOptions.map((option) => <button key={option.id} className={`analysis-option ${draft.mode === option.mode && draft.operation === option.operation ? "active" : ""}`} onClick={() => choosePrimaryAnalysis(option)}><strong>{option.label}</strong><small>{option.description}</small></button>)}</div>}
-                {draft.target_kind === "response_set" && <div className="response-scope"><button className={draft.response_scope === "any_member" ? "active" : ""} onClick={() => setDraft((current) => patchDraft(current, { response_scope: "any_member", member_order: null }))}>{bi(locale, "Any response position", "任一回答順位")}</button><button className={draft.response_scope === "specific_member" ? "active" : ""} onClick={() => setDraft((current) => patchDraft(current, { response_scope: "specific_member", member_order: 1 }))}>{bi(locale, "Specific response position", "指定回答順位")}</button>{draft.response_scope === "specific_member" && <select value={draft.member_order ?? 1} onChange={(event) => setDraft((current) => patchDraft(current, { member_order: Number(event.target.value) }))}>{responseSetDetail?.members.map((member) => <option key={member.member_order} value={member.member_order}>{bi(locale, `Response ${member.member_order}`, `第 ${member.member_order} 回答`)}</option>)}</select>}</div>}
-              </div>
-            </section>
-
-            <section className="setup-row">
-              <div className="setup-label"><span>02</span><strong>{bi(locale, "Data scope", "資料範圍")}</strong></div>
+              <div className="setup-label"><span>01</span><strong>{bi(locale, "Data scope", "資料範圍")}</strong></div>
               <div className="setup-control scope-control">
-                {!draft.operation ? <p className="setup-placeholder">{bi(locale, "Choose an analysis to see available countries and waves.", "選擇分析內容後顯示可用國家與波次。")}</p> : <>
+                {(!detail && draft.target_kind === "question") || (!responseSetDetail && draft.target_kind === "response_set") ? <p className="setup-placeholder">{bi(locale, "Loading the data coverage for this question…", "正在載入這個題目的資料涵蓋範圍…")}</p> : <>
                   <div>
                     <label>{bi(locale, "Country or territory", "國家或地區")}</label>
                     <div className="chip-grid">
@@ -1492,15 +1577,11 @@ function App() {
                       {availableCountries.map((country) => {
                         const selected = draft.countries.includes(country.country_code);
                         const compatible = compatibleCountryCodes.has(country.country_code);
-                        const selectable = selectableCountryCodes.includes(country.country_code);
                         return (
                           <button
                             key={country.country_code}
                             type="button"
-                            disabled={!selectable && !selected}
-                            title={!selectable
-                              ? bi(locale, "No data in the selected waves", "目前所選波次沒有資料")
-                              : !compatible && draft.waves.length
+                            title={!compatible && draft.waves.length
                                 ? bi(locale, "Some selected waves have no data; available cells will still be included", "部分所選波次沒有資料，仍可納入")
                                 : undefined}
                             className={`${selected ? "active" : ""}${!compatible ? " partial-coverage" : ""}`}
@@ -1539,16 +1620,12 @@ function App() {
                       </button>
                       {bootstrap.waves.map((wave) => {
                         const available = availableWaves.includes(wave);
-                        const selectable = selectableWaves.includes(wave);
                         const selected = draft.waves.includes(wave);
                         return (
                           <button
                             key={wave}
                             type="button"
-                            disabled={!selectable && !selected}
-                            title={!selectable
-                              ? bi(locale, "No data for the selected countries or territories", "目前所選國家或地區沒有資料")
-                              : !available && draft.countries.length
+                            title={!available && draft.countries.length
                                 ? bi(locale, "Some selected countries have no data; available cells will still be included", "部分所選國家沒有資料，仍可納入")
                                 : undefined}
                             className={`${selected ? "active" : ""}${!available ? " partial-coverage" : ""}`}
@@ -1585,13 +1662,28 @@ function App() {
             </section>
 
             <section className="setup-row compact-row">
-              <div className="setup-label"><span>03</span><strong>{bi(locale, "Split result", "結果拆分")}</strong></div>
+              <div className="setup-label"><span>02</span><strong>{bi(locale, "Split result", "結果拆分")}</strong></div>
               <div className="setup-control"><div className="grouping-options">{displayGroupingOptions.map((grouping) => <button key={grouping} className={draft.grouping === grouping ? "active" : ""} onClick={() => chooseGrouping(grouping)}>{GROUPING_LABELS[locale][grouping]}</button>)}</div><small className="automatic-note">{bi(locale, "Selected automatically from the current scope; you can adjust it.", "依目前範圍自動選擇，可自行調整。")}</small></div>
+            </section>
+
+            <section className="setup-row">
+              <div className="setup-label"><span>03</span><strong>{bi(locale, "Analysis", "分析內容")}</strong></div>
+              <div className="setup-control">
+                {draft.target_kind === "response_set" ? <button className="analysis-option active"><strong>{bi(locale, "Multiple-response selection rate", "多選題選擇率")}</strong><small>{bi(locale, "Share of respondents mentioning each option", "每個選項被提及的受訪者比例")}</small></button> : <div className="analysis-options">{analysisOptions.map((option) => <button key={option.id} className={`analysis-option ${draft.mode === option.mode && draft.operation === option.operation ? "active" : ""}`} onClick={() => choosePrimaryAnalysis(option)}><strong>{option.label}</strong><small>{option.description}</small></button>)}</div>}
+                {draft.target_kind === "response_set" && <div className="response-scope"><button className={draft.response_scope === "any_member" ? "active" : ""} onClick={() => setDraft((current) => patchDraft(current, { response_scope: "any_member", member_order: null }))}>{bi(locale, "Any response position", "任一回答順位")}</button><button className={draft.response_scope === "specific_member" ? "active" : ""} onClick={() => setDraft((current) => patchDraft(current, { response_scope: "specific_member", member_order: 1 }))}>{bi(locale, "Specific response position", "指定回答順位")}</button>{draft.response_scope === "specific_member" && <select value={draft.member_order ?? 1} onChange={(event) => setDraft((current) => patchDraft(current, { member_order: Number(event.target.value) }))}>{responseSetDetail?.members.map((member) => <option key={member.member_order} value={member.member_order}>{bi(locale, `Response ${member.member_order}`, `第 ${member.member_order} 回答`)}</option>)}</select>}</div>}
+              </div>
             </section>
 
             <footer className="setup-footer">
               <div>{readinessIssues.length ? <div className="issue-list">{readinessIssues.map((issue) => <span key={issue}><CircleHelp size={14} />{issue}</span>)}</div> : <p>{analysisContract(draft, bootstrap, locale)}</p>}</div>
-              <button className="run-button" disabled={running || readinessIssues.length > 0} onClick={runAnalysis}>{running ? <LoaderCircle className="spin" size={17} /> : <Play size={17} />}{bi(locale, "Generate result", "產生結果")}</button>
+              <div className={`auto-result-state ${running ? "updating" : readinessIssues.length ? "waiting" : "ready"}`}>
+                {running && <LoaderCircle className="spin" size={16} />}
+                <strong>{running
+                  ? bi(locale, "Updating result…", "正在更新結果…")
+                  : readinessIssues.length
+                    ? bi(locale, "Complete the settings above", "請完成上方設定")
+                    : bi(locale, "Results update automatically", "結果將自動更新")}</strong>
+              </div>
             </footer>
           </section>
           }
@@ -1687,7 +1779,7 @@ function App() {
                     <span role="columnheader">{bi(locale, "Question", "題目")}</span>
                     <span role="columnheader">{bi(locale, "Waves", "波次")}</span>
                   </div>
-                  {conversation.options.map((option) => {
+                  {conversation.options.slice(0, candidateVisibleCount).map((option) => {
                     const parts = questionOptionParts(option, bootstrap.questions, locale);
                     return (
                       <button
@@ -1698,12 +1790,22 @@ function App() {
                         onClick={() => submitClarificationOption(option)}
                       >
                         <strong className="candidate-question-id" role="cell">{parts.questionId}</strong>
-                        <span className="candidate-question-text" role="cell">{parts.questionText}</span>
+                        <span className="candidate-question-text" role="cell"><span>{parts.questionText}</span>{parts.topic && <small>{parts.topic}</small>}</span>
                         <small className="candidate-question-waves" role="cell">{parts.waves || "—"}</small>
                       </button>
                     );
                   })}
                 </div>
+                {conversation.options.length > 10 && (
+                  <div className="candidate-footer">
+                    <span>{bi(locale, `Showing ${candidateVisibleCount} of ${conversation.options.length}`, `顯示 ${candidateVisibleCount} / ${conversation.options.length} 題`)}</span>
+                    <div>
+                      {candidateVisibleCount > 10 && <button onClick={() => setCandidateVisibleCount(10)}>{bi(locale, "Collapse", "收起")}</button>}
+                      {candidateVisibleCount < conversation.options.length && <button onClick={() => setCandidateVisibleCount((count) => Math.min(count + 10, conversation.options.length))}>{bi(locale, "Show 10 more", "再顯示 10 題")}</button>}
+                      {candidateVisibleCount < conversation.options.length && <button onClick={() => setCandidateVisibleCount(conversation.options.length)}>{bi(locale, "Show all", "顯示全部")}</button>}
+                    </div>
+                  </div>
+                )}
               </div>
             : <div className="clarification-options"><span>{bi(locale, "Choose directly", "直接選擇")}</span>{conversation.options.map((option) => <button key={option.option_id} disabled={assistantBusy} onClick={() => submitClarificationOption(option)}><strong>{localizeOptionLabel(locale, option.label)}</strong>{option.description && <small>{localizeOptionDescription(locale, option.description)}</small>}</button>)}</div>
         ) : null}
@@ -1992,6 +2094,14 @@ function scoreDomain(detail: QuestionDetail | null, mode: Mode | null): [number,
   return [Math.min(...values), Math.max(...values)];
 }
 
+function categoryAxisWidth(labels: unknown[]): number {
+  const longest = labels.reduce(
+    (length, label) => Math.max(length, String(label ?? "").length),
+    0,
+  );
+  return Math.min(360, Math.max(190, Math.round(longest * 6.4)));
+}
+
 function ResultChart({ envelope, details, locale }: { envelope: AnalysisEnvelope; details: ResultDetails; locale: Locale }) {
   const { result, draft } = envelope;
   if (!result.rows.length) return <div className="chart-empty">{bi(locale, "There is no result to display for this scope.", "目前設定沒有可呈現的結果。")}</div>;
@@ -2011,7 +2121,7 @@ function ResultChart({ envelope, details, locale }: { envelope: AnalysisEnvelope
       return <><div className="chart-note">{bi(locale, "Each wave is a separate cross-sectional sample; lines only help show change over time.", "各波次為不同的橫截面樣本；連線僅用於協助觀察變化。")}</div><div className="chart-wrap" style={{ height: resultChartHeight("line", data.length, series.length) }}><ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{ top: 14, right: 28, bottom: 18, left: 8 }}><CartesianGrid stroke="#E4E0D6" vertical={false} /><XAxis dataKey="context" /><YAxis domain={domain} tickFormatter={(value) => formatNumber(value, 1, locale)} /><Tooltip formatter={(value) => formatNumber(value, 2, locale)} /><Legend />{series.map((name, index) => <Line key={name} type="linear" dataKey={name} stroke={CHART_COLORS[index % CHART_COLORS.length]} strokeWidth={2.4} dot={{ r: 4 }} />)}</LineChart></ResponsiveContainer></div></>;
     }
     const data = rows.map((row) => ({ context: row.label ? `${dimensionLabel(row, locale)} · ${row.label}` : dimensionLabel(row, locale), value: Number(row.estimate), n: row.base_n }));
-    return <div className="chart-wrap" style={{ height: resultChartHeight("bar", data.length) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={data} layout="vertical" margin={{ top: 12, right: 26, bottom: 12, left: 22 }}><CartesianGrid stroke="#E4E0D6" horizontal={false} /><XAxis type="number" domain={domain} /><YAxis type="category" dataKey="context" width={210} /><Tooltip formatter={(value) => formatNumber(value, 2, locale)} /><Bar dataKey="value" name={preferred === "mean" ? bi(locale, "Mean", "平均值") : bi(locale, "Median position", "中位位置")} fill="#1F6F9C" maxBarSize={25} /></BarChart></ResponsiveContainer></div>;
+    return <div className="chart-wrap" style={{ height: resultChartHeight("bar", data.length) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={data} layout="vertical" margin={{ top: 12, right: 26, bottom: 12, left: 22 }}><CartesianGrid stroke="#E4E0D6" horizontal={false} /><XAxis type="number" domain={domain} /><YAxis type="category" dataKey="context" width={categoryAxisWidth(data.map((item) => item.context))} /><Tooltip formatter={(value) => formatNumber(value, 2, locale)} /><Bar dataKey="value" name={preferred === "mean" ? bi(locale, "Mean", "平均值") : bi(locale, "Median position", "中位位置")} fill="#1F6F9C" maxBarSize={25} /></BarChart></ResponsiveContainer></div>;
   }
   if (result.result_type === "distribution" || result.result_type === "multi_response") {
     const grouped = new Map<string, Record<string, string | number>>();
@@ -2025,7 +2135,7 @@ function ResultChart({ envelope, details, locale }: { envelope: AnalysisEnvelope
     const data = [...grouped.values()];
     const series = [...new Set(result.rows.map((row) => dimensionLabel(row, locale)))];
     const total = result.result_type === "multi_response" ? result.rows.reduce((sum, row) => sum + Number(row.proportion ?? 0), 0) * 100 : null;
-    return <>{total != null && total > 100.01 && <div className="chart-note">{bi(locale, `This is a multiple-response question. Respondents may select more than one option, so percentages can exceed 100% (current total: ${formatNumber(total, 2, locale)}%).`, `這是多選題；同一受訪者可選擇多個選項，因此比例合計可能超過 100%（目前合計 ${formatNumber(total, 2, locale)}%）。`)}</div>}<div className="chart-wrap distribution" style={{ height: resultChartHeight("distribution", data.length, series.length) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={data} layout="vertical" margin={{ top: 10, right: 24, bottom: 10, left: 20 }}><CartesianGrid stroke="#E4E0D6" horizontal={false} /><XAxis type="number" domain={[0, 100]} tickFormatter={(value) => `${value}%`} /><YAxis type="category" dataKey="label" width={230} interval={0} /><Tooltip formatter={(value) => `${formatNumber(value, 2, locale)}%`} /><Legend />{series.map((name, index) => <Bar key={name} dataKey={name} fill={CHART_COLORS[index % CHART_COLORS.length]} maxBarSize={23} />)}</BarChart></ResponsiveContainer></div></>;
+    return <>{total != null && total > 100.01 && <div className="chart-note">{bi(locale, `This is a multiple-response question. Respondents may select more than one option, so percentages can exceed 100% (current total: ${formatNumber(total, 2, locale)}%).`, `這是多選題；同一受訪者可選擇多個選項，因此比例合計可能超過 100%（目前合計 ${formatNumber(total, 2, locale)}%）。`)}</div>}<div className="chart-wrap distribution" style={{ height: resultChartHeight("distribution", data.length, series.length) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={data} layout="vertical" margin={{ top: 10, right: 24, bottom: 10, left: 20 }}><CartesianGrid stroke="#E4E0D6" horizontal={false} /><XAxis type="number" domain={[0, 100]} tickFormatter={(value) => `${value}%`} /><YAxis type="category" dataKey="label" width={categoryAxisWidth(data.map((item) => item.label))} interval={0} /><Tooltip formatter={(value) => `${formatNumber(value, 2, locale)}%`} /><Legend />{series.map((name, index) => <Bar key={name} dataKey={name} fill={CHART_COLORS[index % CHART_COLORS.length]} maxBarSize={23} />)}</BarChart></ResponsiveContainer></div></>;
   }
   if (result.result_type === "crosstab") return <CrosstabMatrix envelope={envelope} details={details} locale={locale} />;
   if (result.result_type === "relationship") {
@@ -2069,11 +2179,22 @@ function ResultTable({ envelope, details, locale }: { envelope: AnalysisEnvelope
     || row.raw_value === undefined
     || String(row.raw_value_key) === String(row.raw_value),
   );
+  const redundantCategoryLabel = rows.every((row) =>
+    row.category_label === undefined
+    || String(row.category_label) === String(row.label),
+  );
+  const redundantDenominator = rows.every((row) =>
+    row.denominator === undefined
+    || row.base_n === undefined
+    || Number(row.denominator) === Number(row.base_n),
+  );
   const hiddenHeaders = new Set([
     "outcome_raw_value",
     "group_raw_value",
     "estimate_n",
     ...(redundantRawValueKey ? ["raw_value_key"] : []),
+    ...(redundantCategoryLabel ? ["category_label"] : []),
+    ...(redundantDenominator ? ["denominator"] : []),
   ]);
   const headers = [...new Set(rows.flatMap((row) => Object.keys(row)))].filter((header) => {
     if (hiddenHeaders.has(header)) return false;
@@ -2082,8 +2203,8 @@ function ResultTable({ envelope, details, locale }: { envelope: AnalysisEnvelope
   const primary = details.primary?.variable_id ?? envelope.draft.target_id ?? bi(locale, "First question", "第一題");
   const secondary = details.secondary?.variable_id ?? envelope.draft.secondary_id ?? bi(locale, "Second question", "第二題");
   const labels: Record<string, string> = locale === "en"
-    ? { context: "Analysis scope", metric: "Statistic", estimate: "Result", label: "Response", raw_value: "Raw value", raw_value_key: "Value code", continuous_score: "Numeric score", order_position: "Ordinal position", base_n: "Valid N", estimate_base: "Analysis base", unweighted_n: "Count", denominator: "Denominator", proportion: "Percentage", row_proportion: "Row percentage", column_proportion: "Column percentage", total_proportion: "Total percentage", outcome_label: `${primary} row response`, outcome_order: "Row order", group_label: `${secondary} column response`, group_order: "Column order", x: `${primary} score`, y: `${secondary} score`, option_label: "Option", member_order: "Response position" }
-    : { context: "分析範圍", metric: "統計量", estimate: "結果", label: "回答", raw_value: "原始值", raw_value_key: "數值代碼", continuous_score: "連續分數", order_position: "順序位置", base_n: "有效人數", estimate_base: "計算基數", unweighted_n: "人數", denominator: "人數分母", proportion: "比例", row_proportion: "列百分比", column_proportion: "欄百分比", total_proportion: "總體百分比", outcome_label: `${primary} 列回答`, outcome_order: "列回答順序", group_label: `${secondary} 欄回答`, group_order: "欄回答順序", x: `${primary} 分數`, y: `${secondary} 分數`, option_label: "選項", member_order: "回答順位" };
+    ? { context: "Analysis scope", metric: "Statistic", estimate: "Result", label: "Response", category_label: "Response label", raw_value: "Raw value", raw_value_key: "Value code", continuous_score: "Numeric score", order_position: "Ordinal position", base_n: "Valid N", estimate_base: "Analysis base", unweighted_n: "Count", denominator: "Denominator", proportion: "Percentage", row_proportion: "Row percentage", column_proportion: "Column percentage", total_proportion: "Total percentage", outcome_label: `${primary} row response`, outcome_order: "Row order", group_label: `${secondary} column response`, group_order: "Column order", x: `${primary} score`, y: `${secondary} score`, option_label: "Option", member_order: "Response position" }
+    : { context: "分析範圍", metric: "統計量", estimate: "結果", label: "回答", category_label: "回答標籤", raw_value: "原始值", raw_value_key: "數值代碼", continuous_score: "連續分數", order_position: "順序位置", base_n: "有效人數", estimate_base: "計算基數", unweighted_n: "人數", denominator: "人數分母", proportion: "比例", row_proportion: "列百分比", column_proportion: "欄百分比", total_proportion: "總體百分比", outcome_label: `${primary} 列回答`, outcome_order: "列回答順序", group_label: `${secondary} 欄回答`, group_order: "欄回答順序", x: `${primary} 分數`, y: `${secondary} 分數`, option_label: "選項", member_order: "回答順位" };
   const value = (header: string, item: unknown) => header.includes("proportion") && typeof item === "number" ? `${formatNumber(item * 100, 2, locale)}%` : header === "metric" ? METRIC_LABELS[locale][String(item)] ?? bi(locale, "Statistic", "統計量") : typeof item === "number" ? formatNumber(item, 2, locale) : String(item ?? "—");
   return <div className="table-wrap result-table"><table><thead><tr>{headers.map((header) => <th key={header}>{labels[header] ?? bi(locale, "Value", "數值")}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={index}>{headers.map((header) => <td key={header}>{value(header, row[header])}</td>)}</tr>)}</tbody></table></div>;
 }

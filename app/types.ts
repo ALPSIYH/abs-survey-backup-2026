@@ -38,6 +38,7 @@ export interface ScaleValue {
 
 export interface QuestionDetail extends Question {
   scale: ScaleValue[];
+  base_contexts: Context[];
   contexts: Partial<Record<Mode, Context[]>>;
 }
 
@@ -86,6 +87,7 @@ export interface Bootstrap {
 
 export interface CatalogSearchResponse {
   query: string;
+  total: number;
   questions: Question[];
 }
 

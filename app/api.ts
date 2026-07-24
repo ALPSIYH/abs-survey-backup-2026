@@ -280,6 +280,36 @@ function questionContexts(data: QuestionData, mode: Mode): Context[] {
   );
 }
 
+function baseQuestionContexts(data: QuestionData): Context[] {
+  const settings = new Map(data.scale.map((item) => [rawKey(item[0]), item]));
+  const counts = new Map<string, Context>();
+  for (const [country, wave, value, count] of data.cells) {
+    const scale = settings.get(rawKey(value));
+    if (
+      !scale
+      || !(
+        scale[3] === "included"
+        || scale[5] === "included"
+        || scale[7] === "included"
+      )
+    ) {
+      continue;
+    }
+    const key = `${country}:${wave}`;
+    const current = counts.get(key) ?? {
+      country_code: country,
+      wave,
+      unweighted_n: 0,
+    };
+    current.unweighted_n += count;
+    counts.set(key, current);
+  }
+  return [...counts.values()].sort(
+    (left, right) =>
+      left.country_code - right.country_code || left.wave - right.wave,
+  );
+}
+
 async function bootstrap(): Promise<Bootstrap> {
   const catalog = await loadCatalog();
   return {
@@ -333,6 +363,7 @@ async function question(id: string): Promise<QuestionDetail> {
       continuous_score: value[6],
       continuous_status: value[7] as "included" | "excluded",
     })),
+    base_contexts: baseQuestionContexts(data),
     contexts: Object.fromEntries(
       base.modes.map((mode) => [mode, questionContexts(data, mode)]),
     ),
@@ -725,24 +756,52 @@ function searchScore(questionItem: Question, query: string): number {
   if (exactId === questionItem.variable_id.toLowerCase()) return 10_000;
   const tokens = normalized.split(/\s+/).filter((token) => token.length > 1);
   if (!tokens.length) return 0;
-  const haystack = `${questionItem.variable_id} ${questionItem.question_text} ${questionItem.topic_label}`.toLowerCase();
+  const questionText = questionItem.question_text.normalize("NFKC").toLowerCase();
+  const topicText = questionItem.topic_label.normalize("NFKC").toLowerCase();
+  const idText = questionItem.variable_id.toLowerCase();
   let score = 0;
+  if (normalized === idText) score += 2_000;
+  if (questionText.includes(normalized)) score += 500 + normalized.length * 3;
+  if (topicText.includes(normalized)) score += 120 + normalized.length;
+  let matchedTokens = 0;
   for (const token of tokens) {
-    if (haystack.includes(token)) score += token.length + 4;
+    if (idText === token) {
+      score += 1_000;
+      matchedTokens += 1;
+      continue;
+    }
+    if (questionText.includes(token)) {
+      const positionBonus = questionText.startsWith(token) ? 24 : 0;
+      score += 42 + token.length * 5 + positionBonus;
+      matchedTokens += 1;
+      continue;
+    }
+    if (topicText.includes(token)) {
+      score += 16 + token.length * 2;
+      matchedTokens += 1;
+    }
   }
-  const coverage = score ? tokens.filter((token) => haystack.includes(token)).length / tokens.length : 0;
-  return score * (0.45 + coverage);
+  const coverage = matchedTokens / tokens.length;
+  if (coverage === 1) score += 180;
+  else if (coverage >= 0.6) score += 60;
+  return score * (0.35 + coverage);
 }
 
-async function catalogSearch(query: string, limit = 20): Promise<CatalogSearchResponse> {
+async function catalogSearch(query: string, limit = 199): Promise<CatalogSearchResponse> {
   const data = await bootstrap();
-  const questions = data.questions
+  const matches = data.questions
     .map((item) => ({ item, score: searchScore(item, query) }))
     .filter(({ score }) => score > 0)
-    .sort((left, right) => right.score - left.score)
+    .sort((left, right) =>
+      right.score - left.score
+      || left.item.variable_id.localeCompare(right.item.variable_id, undefined, {
+        numeric: true,
+      }),
+    );
+  const questions = matches
     .slice(0, limit)
     .map(({ item }) => item);
-  return { query, questions };
+  return { query, total: matches.length, questions };
 }
 
 function parseStatistic(message: string): Statistic | null {
@@ -1316,7 +1375,7 @@ async function sendConversationMessage(
   if (explicitQuestion || !currentCanContinue || questionLikeInput(trimmed) && !state.plan.questionId) {
     const matches = explicitQuestion
       ? [explicitQuestion]
-      : (await catalogSearch(trimmed, 5)).questions;
+      : (await catalogSearch(trimmed)).questions;
     if (!matches.length) {
       state.pending = null;
       state.options = [];
@@ -1525,7 +1584,7 @@ export const api = {
     prompt: string,
     _draft: Draft,
   ): Promise<AssistantPlanResponse> => {
-    const search = await catalogSearch(prompt, 5);
+    const search = await catalogSearch(prompt);
     return {
       clarification_required: true,
       detail: "Choose the survey question that best matches your request.",

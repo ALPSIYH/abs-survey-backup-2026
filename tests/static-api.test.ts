@@ -69,12 +69,22 @@ test("bootstrap exposes the complete reviewed cloud catalog", async () => {
 test("question contracts preserve analysis modes and coverage", async () => {
   const q95 = await api.question("q95");
   assert.deepEqual(q95.modes, ["category", "order", "continuous"]);
+  assert.ok(q95.base_contexts.length > 0);
   assert.equal(q95.contexts.continuous?.some(
     (context) => context.country_code === 1 && context.wave === 1,
   ), true);
 
   const q172 = await api.question("q172");
   assert.deepEqual(q172.modes, ["category"]);
+});
+
+test("catalog search returns a ranked complete candidate pool", async () => {
+  const result = await api.catalogSearch("government");
+  assert.equal(result.total, result.questions.length);
+  assert.ok(result.total > 5);
+  assert.ok(result.questions.every((question) =>
+    /government/i.test(`${question.question_text} ${question.topic_label}`),
+  ));
 });
 
 test("continuous summaries reproduce aggregate q95 values", async () => {
