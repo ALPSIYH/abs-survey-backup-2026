@@ -43,7 +43,7 @@ import {
   YAxis,
   ZAxis,
 } from "recharts";
-import { api } from "./api";
+import { api, catalogMatch } from "./api";
 import { missingScopeCells } from "./coverage";
 import {
   DEFAULT_LOCALE,
@@ -194,7 +194,11 @@ const METRIC_LABELS: Record<Locale, Record<string, string>> = {
   },
 };
 
-const CHART_COLORS = ["#1F6F9C", "#3C4858", "#4E8D7C", "#8C6D5E", "#7A9EAE", "#6E5F7E"];
+const CHART_COLORS = [
+  "#1F6F9C", "#3C4858", "#4E8D7C", "#8C6D5E", "#7A9EAE", "#6E5F7E",
+  "#B05A4F", "#547A3A", "#9A6A16", "#75558A", "#2E7C83", "#A84D72",
+  "#4C6494", "#7E7440", "#536E67", "#8E5C45", "#4E789A", "#68724D",
+];
 
 /** Conversation-view statistic ids → analysis-record citation vocabulary. */
 const STATISTIC_LABELS: Record<Locale, Record<string, string>> = {
@@ -229,6 +233,8 @@ interface JournalEntry {
 }
 
 type ResultTab = "chart" | "table";
+type ChartMetric = "mean" | "median" | "quartiles" | "sd" | "base_n";
+type ChartLayout = "country" | "wave";
 type CatalogKind = "questions" | "response_sets";
 type ResultDetails = { primary: QuestionDetail | null; secondary: QuestionDetail | null };
 type WorkspaceSurface = "workbench" | "conversation";
@@ -266,6 +272,8 @@ function questionOptionParts(
   questionText: string;
   topic: string;
   waves: string;
+  matchBand: Question["match_band"];
+  matchReasons: string[];
 } {
   const cleaned = cleanMarkdown(option.label);
   const match = cleaned.match(/^\s*(q[\d.]+)\s*[·:]\s*(.+)$/i);
@@ -283,7 +291,26 @@ function questionOptionParts(
     questionText: match?.[2] ?? cleaned,
     topic: question ? topicLabel(locale, question.topic_id, question.topic_label) : "",
     waves: describedWaves || metadataWaves,
+    matchBand: option.match_band ?? question?.match_band,
+    matchReasons: (option.match_reasons ?? question?.match_reasons ?? []).map((reason) => {
+      const labels = {
+        exact_id: bi(locale, "Exact question ID", "題號完全相符"),
+        question_phrase: bi(locale, "Question wording", "題目文字相符"),
+        question_terms: bi(locale, "Question keywords", "題目關鍵詞相符"),
+        topic_terms: bi(locale, "Research topic", "研究主題相符"),
+      };
+      return labels[reason];
+    }),
   };
+}
+
+function matchBandLabel(
+  band: Question["match_band"],
+  locale: Locale,
+): string {
+  if (band === "high") return bi(locale, "High match", "高度相關");
+  if (band === "related") return bi(locale, "Related", "相關");
+  return bi(locale, "Broad match", "延伸相關");
 }
 
 export function operationsFor(mode: Mode | null): Operation[] {
@@ -323,32 +350,8 @@ function primaryAnalysisOptions(question: Question | null, locale: Locale): Prim
 }
 
 export function questionMatchScore(question: Question, query: string): number {
-  const trimmed = query.trim();
-  if (!trimmed) return 1;
-  if (/^q\d+(?:\.\d+)?$/i.test(trimmed)) {
-    return question.variable_id.toLowerCase() === trimmed.toLowerCase() ? 10_000 : 0;
-  }
-  const normalized = trimmed.normalize("NFKC").toLowerCase();
-  const questionText = question.question_text.normalize("NFKC").toLowerCase();
-  const topicText = `${question.topic_id} ${question.topic_label}`.normalize("NFKC").toLowerCase();
-  const english = normalized.match(/[a-z0-9.]+/g) ?? [];
-  if (!english.length) return 0;
-  let score = questionText.includes(normalized) ? 500 + normalized.length * 3 : 0;
-  let matched = 0;
-  for (const term of english) {
-    if (question.variable_id.toLowerCase() === term) {
-      score += 1_000;
-      matched += 1;
-    } else if (questionText.includes(term)) {
-      score += 40 + term.length * 5 + (questionText.startsWith(term) ? 20 : 0);
-      matched += 1;
-    } else if (topicText.includes(term)) {
-      score += 14 + term.length * 2;
-      matched += 1;
-    }
-  }
-  if (matched !== english.length) return 0;
-  return score + 160;
+  if (!query.trim()) return 1;
+  return catalogMatch(question, query).score;
 }
 
 export function matchesQuestion(question: Question, query: string): boolean {
@@ -609,6 +612,7 @@ function App() {
   const [groupingManual, setGroupingManual] = useState(false);
   const [basisChosen, setBasisChosen] = useState(true);
   const [showScale, setShowScale] = useState(false);
+  const [showMissingContexts, setShowMissingContexts] = useState(false);
   const [surface, setSurface] = useState<WorkspaceSurface>(() => {
     if (typeof window === "undefined") return "conversation";
     const requested = new URLSearchParams(window.location.search).get("view");
@@ -838,6 +842,7 @@ function App() {
     setResponseSetDetail(null);
     setSecondaryDetail(null);
     setShowScale(false);
+    setShowMissingContexts(false);
     setComparisonChosen(false);
     setGroupingManual(false);
     setBasisChosen(true);
@@ -864,6 +869,7 @@ function App() {
     setResponseSetDetail(null);
     setDetail(null);
     setSecondaryDetail(null);
+    setShowMissingContexts(false);
     setComparisonChosen(true);
     setGroupingManual(false);
     setBasisChosen(true);
@@ -905,11 +911,9 @@ function App() {
     setBasisChosen(true);
     setSecondaryDetail(null);
     setResult(null);
-    setGroupingManual(false);
     setDraft((current) => patchDraft(current, {
       mode: option.mode,
       operation: option.operation,
-      grouping: "none",
       secondary_id: null,
       secondary_mode: null,
       weighted: false,
@@ -1092,6 +1096,7 @@ function App() {
 
   async function restoreJournalEntry(entry: JournalEntry): Promise<void> {
     setError(null);
+    setShowMissingContexts(false);
     chooseSurface("workbench");
     setResultTab("chart");
     setComparisonChosen(true);
@@ -1129,7 +1134,6 @@ function App() {
       lastAutomaticAnalysisKey.current = expectedKey;
       setResult(envelope);
       setResultDetails({ primary: detail, secondary: secondaryDetail });
-      setResultTab("chart");
       recordJournalEntry(envelope, "workbench", OPERATION_LABELS[locale][envelope.result.result_type]);
     } catch (reason) {
       if (requestSequence !== analysisSequence.current) return;
@@ -1158,6 +1162,7 @@ function App() {
 
   async function applyConversationSnapshot(snapshot: ConversationSnapshot | null): Promise<void> {
     if (!snapshot || conversationSnapshotRef.current === snapshot.snapshot_id) return;
+    setShowMissingContexts(false);
     conversationSnapshotRef.current = snapshot.snapshot_id;
     const primary = snapshot.draft.target_id
       ? await loadQuestion(snapshot.draft.target_id)
@@ -1574,6 +1579,7 @@ function App() {
                         disabled={!selectableCountryCodes.length}
                         onClick={() => {
                           const allSelected = selectableCountryCodes.every((code) => draft.countries.includes(code));
+                          setShowMissingContexts(false);
                           setGroupingManual(false);
                           setDraft((current) => patchDraft(current, {
                             countries: allSelected ? [] : selectableCountryCodes,
@@ -1594,6 +1600,7 @@ function App() {
                                 : undefined}
                             className={`${selected ? "active" : ""}${!compatible ? " partial-coverage" : ""}`}
                             onClick={() => {
+                              setShowMissingContexts(false);
                               setGroupingManual(false);
                               setDraft((current) => patchDraft(current, {
                                 countries: selected
@@ -1618,6 +1625,7 @@ function App() {
                         disabled={!selectableWaves.length}
                         onClick={() => {
                           const allSelected = selectableWaves.every((wave) => draft.waves.includes(wave));
+                          setShowMissingContexts(false);
                           setGroupingManual(false);
                           setDraft((current) => patchDraft(current, {
                             waves: allSelected ? [] : selectableWaves,
@@ -1638,6 +1646,7 @@ function App() {
                                 : undefined}
                             className={`${selected ? "active" : ""}${!available ? " partial-coverage" : ""}`}
                             onClick={() => {
+                              setShowMissingContexts(false);
                               setGroupingManual(false);
                               setDraft((current) => patchDraft(current, {
                                 waves: selected
@@ -1662,7 +1671,14 @@ function App() {
                   {missingContexts.length > 0 && (
                     <div className="notice warn">
                       <strong>{bi(locale, `${missingContexts.length} country-wave cells have no data and will be excluded`, `${missingContexts.length} 個國家－波次組合沒有資料，將不納入結果`)}</strong>
-                      <p>{missingContextLabels.join(locale === "en" ? ", " : "、")}</p>
+                      <div className="notice-action">
+                        <button onClick={() => setShowMissingContexts((visible) => !visible)}>
+                          {showMissingContexts
+                            ? bi(locale, "Hide unavailable scopes", "收起無資料範圍")
+                            : bi(locale, "View unavailable scopes", "查看無資料範圍")}
+                        </button>
+                      </div>
+                      {showMissingContexts && <p className="missing-context-list">{missingContextLabels.join(locale === "en" ? ", " : "、")}</p>}
                     </div>
                   )}
                 </>}
@@ -1684,19 +1700,12 @@ function App() {
 
             <footer className="setup-footer">
               <div>{readinessIssues.length ? <div className="issue-list">{readinessIssues.map((issue) => <span key={issue}><CircleHelp size={14} />{issue}</span>)}</div> : <p>{analysisContract(draft, bootstrap, locale)}</p>}</div>
-              <div className={`auto-result-state ${running ? "updating" : readinessIssues.length ? "waiting" : "ready"}`}>
-                {running && <LoaderCircle className="spin" size={16} />}
-                <strong>{running
-                  ? bi(locale, "Updating result…", "正在更新結果…")
-                  : readinessIssues.length
-                    ? bi(locale, "Complete the settings above", "請完成上方設定")
-                    : bi(locale, "Results update automatically", "結果將自動更新")}</strong>
-              </div>
+              {running && <div className="auto-result-state updating" role="status"><LoaderCircle className="spin" size={16} /><strong>{bi(locale, "Updating result…", "正在更新結果…")}</strong></div>}
             </footer>
           </section>
           }
 
-          {result && <ResultWorkspace envelope={result} details={resultDetails} bootstrap={bootstrap} currentRevision={draft.revision} tab={resultTab} onTab={setResultTab} locale={locale} />}
+          {result && <ResultWorkspace key={`${result.draft.target_id ?? "none"}:${result.statistic ?? result.result.result_type}`} envelope={result} details={resultDetails} bootstrap={bootstrap} currentRevision={draft.revision} tab={resultTab} onTab={setResultTab} locale={locale} />}
         </>}
         {surface === "workbench" && (
           <JournalFeed
@@ -1784,7 +1793,7 @@ function App() {
                 <div className="candidate-question-list" role="table" aria-label={bi(locale, "Candidate questions", "候選題目")}>
                   <div className="candidate-question-header" role="row">
                     <span role="columnheader">{bi(locale, "ID", "題號")}</span>
-                    <span role="columnheader">{bi(locale, "Question", "題目")}</span>
+                    <span role="columnheader">{bi(locale, "Question and match", "題目與相關性")}</span>
                     <span role="columnheader">{bi(locale, "Waves", "波次")}</span>
                   </div>
                   {conversation.options.slice(0, candidateVisibleCount).map((option) => {
@@ -1798,7 +1807,13 @@ function App() {
                         onClick={() => submitClarificationOption(option)}
                       >
                         <strong className="candidate-question-id" role="cell">{parts.questionId}</strong>
-                        <span className="candidate-question-text" role="cell"><span>{parts.questionText}</span>{parts.topic && <small>{parts.topic}</small>}</span>
+                        <span className="candidate-question-text" role="cell">
+                          <span>{parts.questionText}</span>
+                          <small>
+                            {parts.topic}
+                            {parts.matchBand && <><em className={`match-band ${parts.matchBand}`}>{matchBandLabel(parts.matchBand, locale)}</em>{parts.matchReasons.length > 0 && <span className="match-reasons">{parts.matchReasons.join(locale === "en" ? " · " : "、")}</span>}</>}
+                          </small>
+                        </span>
                         <small className="candidate-question-waves" role="cell">{parts.waves || "—"}</small>
                       </button>
                     );
@@ -2082,7 +2097,87 @@ const ResultWorkspace = memo(function ResultWorkspace({ envelope, details, boots
           : bi(locale, "Median and quartiles", "中位數與四分位數"))
       : OPERATION_LABELS[locale][envelope.result.result_type];
   const stale = draft.revision !== currentRevision;
-  return <section className="result-workspace"><header className="result-title"><div><span className="section-kicker">{bi(locale, "Analysis result", "分析結果")} {stale ? bi(locale, "· Settings have changed", "· 目前設定已變更") : ""}</span><h2>{question ? `${question.variable_id} · ${question.question_text}` : responseSet?.label}</h2>{secondary && <div className="result-secondary"><span>{bi(locale, "Second variable", "第二變量")}</span><strong>{secondary.variable_id} · {secondary.question_text}</strong><small>{draft.secondary_mode ? MODE_LABELS[locale][draft.secondary_mode] : ""}</small></div>}<p>{metric} · {contextSummary(draft, bootstrap.countries, locale)} · {GROUPING_LABELS[locale][draft.grouping]}</p></div><span className="result-badge">{bi(locale, "Descriptive result", "描述性結果")}</span></header><ResultEvidence envelope={envelope} locale={locale} /><div className="result-tabs"><button className={tab === "chart" ? "active" : ""} onClick={() => onTab("chart")}><BarChart3 size={16} />{bi(locale, "Chart", "圖表")}</button><button className={tab === "table" ? "active" : ""} onClick={() => onTab("table")}><Table2 size={16} />{bi(locale, "Data", "資料")}</button></div><div className={`result-body result-body-${tab}`}>{tab === "chart" && <ResultChart envelope={envelope} details={details} locale={locale} />}{tab === "table" && <ResultTable envelope={envelope} details={details} locale={locale} />}</div></section>;
+  const availableMetrics = useMemo(() => {
+    if (envelope.result.result_type !== "summary") return [];
+    const rowMetrics = new Set(envelope.result.rows.map((row) => String(row.metric)));
+    const metrics: ChartMetric[] = [];
+    if (rowMetrics.has("mean")) metrics.push("mean");
+    if (rowMetrics.has("median")) metrics.push("median");
+    if (rowMetrics.has("q25") && rowMetrics.has("q75")) metrics.push("quartiles");
+    if (rowMetrics.has("sd")) metrics.push("sd");
+    if (rowMetrics.has("base_n") || envelope.result.rows.some((row) => row.base_n != null)) metrics.push("base_n");
+    return metrics;
+  }, [envelope.result]);
+  const initialMetric = (
+    envelope.statistic
+    && ["mean", "median", "quartiles", "sd", "base_n"].includes(envelope.statistic)
+    && availableMetrics.includes(envelope.statistic as ChartMetric)
+  )
+    ? envelope.statistic as ChartMetric
+    : availableMetrics[0] ?? "mean";
+  const [chartMetric, setChartMetric] = useState<ChartMetric>(initialMetric);
+  const [chartLayout, setChartLayout] = useState<ChartLayout>("country");
+  const canRotateLayout = draft.grouping === "country_wave"
+    && draft.countries.length > 1
+    && draft.waves.length > 1;
+  const layoutUsesFacets = ["distribution", "multi_response"].includes(
+    envelope.result.result_type,
+  ) || chartMetric === "quartiles";
+  return (
+    <section className="result-workspace">
+      <header className="result-title">
+        <div>
+          <span className="section-kicker">
+            {bi(locale, "Analysis result", "分析結果")} {stale ? bi(locale, "· Settings have changed", "· 目前設定已變更") : ""}
+          </span>
+          <h2>{question ? `${question.variable_id} · ${question.question_text}` : responseSet?.label}</h2>
+          {secondary && (
+            <div className="result-secondary">
+              <span>{bi(locale, "Second variable", "第二變量")}</span>
+              <strong>{secondary.variable_id} · {secondary.question_text}</strong>
+              <small>{draft.secondary_mode ? MODE_LABELS[locale][draft.secondary_mode] : ""}</small>
+            </div>
+          )}
+          <p>{metric} · {contextSummary(draft, bootstrap.countries, locale)} · {GROUPING_LABELS[locale][draft.grouping]}</p>
+        </div>
+        <span className="result-badge">{bi(locale, "Descriptive result", "描述性結果")}</span>
+      </header>
+      <ResultEvidence envelope={envelope} locale={locale} />
+      <div className="result-tabs">
+        <button className={tab === "chart" ? "active" : ""} onClick={() => onTab("chart")}><BarChart3 size={16} />{bi(locale, "Chart", "圖表")}</button>
+        <button className={tab === "table" ? "active" : ""} onClick={() => onTab("table")}><Table2 size={16} />{bi(locale, "Data", "資料")}</button>
+      </div>
+      {tab === "chart" && (availableMetrics.length > 1 || canRotateLayout) && (
+        <div className="chart-controls">
+          {availableMetrics.length > 1 && (
+            <div>
+              <span>{bi(locale, "Chart metric", "圖表指標")}</span>
+              <div className="chart-control-buttons">
+                {availableMetrics.map((item) => <button key={item} className={chartMetric === item ? "active" : ""} onClick={() => setChartMetric(item)}>{STATISTIC_LABELS[locale][item]}</button>)}
+              </div>
+            </div>
+          )}
+          {canRotateLayout && (
+            <div>
+              <span>{bi(locale, "Presentation", "呈現方式")}</span>
+              <div className="chart-control-buttons">
+                <button className={chartLayout === "country" ? "active" : ""} onClick={() => setChartLayout("country")}>
+                  {layoutUsesFacets ? bi(locale, "Facet by country", "依國家分面") : bi(locale, "Countries as series", "國家作為系列")}
+                </button>
+                <button className={chartLayout === "wave" ? "active" : ""} onClick={() => setChartLayout("wave")}>
+                  {layoutUsesFacets ? bi(locale, "Facet by wave", "依波次分面") : bi(locale, "Waves as series", "波次作為系列")}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      <div className={`result-body result-body-${tab}`}>
+        {tab === "chart" && <ResultChart envelope={envelope} details={details} metric={chartMetric} layout={chartLayout} locale={locale} />}
+        {tab === "table" && <ResultTable envelope={envelope} details={details} locale={locale} />}
+      </div>
+    </section>
+  );
 });
 
 function ResultEvidence({ envelope, locale }: { envelope: AnalysisEnvelope; locale: Locale }) {
@@ -2107,29 +2202,158 @@ function categoryAxisWidth(labels: unknown[]): number {
     (length, label) => Math.max(length, String(label ?? "").length),
     0,
   );
-  return Math.min(360, Math.max(190, Math.round(longest * 6.4)));
+  return Math.min(280, Math.max(140, Math.round(longest * 5.8)));
 }
 
-function ResultChart({ envelope, details, locale }: { envelope: AnalysisEnvelope; details: ResultDetails; locale: Locale }) {
+function summaryMetricRows(rows: ResultRow[], metric: ChartMetric): ResultRow[] {
+  if (metric !== "base_n") return rows.filter((row) => row.metric === metric);
+  const explicit = rows.filter((row) => row.metric === "base_n");
+  if (explicit.length) return explicit;
+  const contexts = new Map<string, ResultRow>();
+  rows.forEach((row) => {
+    const key = JSON.stringify(row.dimensions ?? []);
+    if (!contexts.has(key) && row.base_n != null) {
+      contexts.set(key, { ...row, metric: "base_n", estimate: Number(row.base_n) });
+    }
+  });
+  return [...contexts.values()];
+}
+
+function QuartileRangeChart({
+  rows,
+  detail,
+  mode,
+  grouping,
+  layout,
+  locale,
+}: {
+  rows: ResultRow[];
+  detail: QuestionDetail | null;
+  mode: Mode | null;
+  grouping: Grouping;
+  layout: ChartLayout;
+  locale: Locale;
+}) {
+  type QuartileItem = {
+    label: string;
+    country: string | null;
+    wave: string | null;
+    q25?: number;
+    median?: number;
+    q75?: number;
+    q25Label?: string;
+    medianLabel?: string;
+    q75Label?: string;
+  };
+  const contexts = new Map<string, QuartileItem>();
+  rows.forEach((row) => {
+    if (!["q25", "median", "q75"].includes(String(row.metric))) return;
+    const label = dimensionLabel(row, locale);
+    const key = JSON.stringify(row.dimensions ?? []);
+    const item = contexts.get(key) ?? {
+      label,
+      country: dimensionValue(row, "country"),
+      wave: dimensionValue(row, "wave"),
+    };
+    const metric = String(row.metric) as "q25" | "median" | "q75";
+    item[metric] = Number(row.estimate);
+    if (row.label) item[`${metric}Label`] = String(row.label);
+    contexts.set(key, item);
+  });
+  const items = [...contexts.values()].filter(
+    (item) => item.q25 != null && item.median != null && item.q75 != null,
+  );
+  const definedDomain = scoreDomain(detail, mode);
+  const values = items.flatMap((item) => [item.q25, item.median, item.q75]).filter(
+    (value): value is number => value != null && Number.isFinite(value),
+  );
+  const minimum = definedDomain?.[0] ?? Math.min(...values);
+  const maximum = definedDomain?.[1] ?? Math.max(...values);
+  const span = Math.max(maximum - minimum, 1);
+  if (!items.length) {
+    return <div className="chart-empty">{bi(locale, "Quartiles are not available for this result.", "這份結果沒有可呈現的四分位數。")}</div>;
+  }
+  const facetKind = grouping === "country_wave"
+    ? (layout === "country" ? "country" : "wave")
+    : null;
+  const groupedItems = new Map<string, QuartileItem[]>();
+  items.forEach((item) => {
+    const facet = facetKind ? item[facetKind] ?? bi(locale, "Other", "其他") : "";
+    groupedItems.set(facet, [...(groupedItems.get(facet) ?? []), item]);
+  });
+  const displayValue = (value: number | undefined, label: string | undefined) =>
+    `${formatNumber(value, 2, locale)}${mode === "order" && label ? ` · ${label}` : ""}`;
+  return (
+    <div className="quartile-chart">
+      <div className="quartile-legend">
+        <span><i className="range" />{bi(locale, "25th–75th percentile", "第 25–75 百分位")}</span>
+        <span><i className="median" />{bi(locale, "Median", "中位數")}</span>
+      </div>
+      <div className="quartile-axis"><span>{formatNumber(minimum, 2, locale)}</span><span>{formatNumber(maximum, 2, locale)}</span></div>
+      {[...groupedItems.entries()].map(([facet, groupItems]) => (
+        <section className="quartile-facet" key={facet || "all"}>
+          {facet && <header><strong>{facet}</strong><span>{layout === "country" ? bi(locale, "Waves listed below", "下列各波次") : bi(locale, "Countries listed below", "下列各國家")}</span></header>}
+          {groupItems.map((item) => {
+            const left = ((Number(item.q25) - minimum) / span) * 100;
+            const width = ((Number(item.q75) - Number(item.q25)) / span) * 100;
+            const median = ((Number(item.median) - minimum) / span) * 100;
+            const rowLabel = facetKind === "country" ? item.wave ?? item.label
+              : facetKind === "wave" ? item.country ?? item.label : item.label;
+            return (
+              <div className="quartile-row" key={item.label}>
+                <strong>{rowLabel}</strong>
+                <div className="quartile-rail">
+                  <span className="quartile-range" style={{ left: `${left}%`, width: `${Math.max(width, 1)}%` }} />
+                  <span className="quartile-median" style={{ left: `${median}%` }} title={`${bi(locale, "Median", "中位數")}: ${displayValue(item.median, item.medianLabel)}`} />
+                </div>
+                <small>{displayValue(item.q25, item.q25Label)}<br />{displayValue(item.median, item.medianLabel)}<br />{displayValue(item.q75, item.q75Label)}</small>
+              </div>
+            );
+          })}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function ResultChart({ envelope, details, metric, layout, locale }: { envelope: AnalysisEnvelope; details: ResultDetails; metric: ChartMetric; layout: ChartLayout; locale: Locale }) {
   const { result, draft } = envelope;
   if (!result.rows.length) return <div className="chart-empty">{bi(locale, "There is no result to display for this scope.", "目前設定沒有可呈現的結果。")}</div>;
   if (result.result_type === "summary") {
-    const preferred = draft.mode === "continuous" ? "mean" : "median";
-    const rows = result.rows.filter((row) => row.metric === preferred);
-    if (draft.grouping === "none" || rows.length <= 1) return <StatisticGrid rows={result.rows} locale={locale} />;
-    const domain = scoreDomain(details.primary, draft.mode);
-    if (draft.grouping.includes("wave")) {
-      const series = [...new Set(rows.map((row) => dimensionValue(row, "country") ?? bi(locale, "Result", "結果")))];
-      const waves = [...new Set(rows.map((row) => dimensionValue(row, "wave") ?? dimensionLabel(row, locale)))];
-      const data = waves.map((wave) => {
-        const item: Record<string, string | number> = { context: wave };
-        rows.filter((row) => (dimensionValue(row, "wave") ?? dimensionLabel(row, locale)) === wave).forEach((row) => { item[dimensionValue(row, "country") ?? bi(locale, "Result", "結果")] = Number(row.estimate); });
+    if (metric === "quartiles") {
+      return <QuartileRangeChart rows={result.rows} detail={details.primary} mode={draft.mode} grouping={draft.grouping} layout={layout} locale={locale} />;
+    }
+    const rows = summaryMetricRows(result.rows, metric);
+    if (draft.grouping === "none" || rows.length <= 1) return <StatisticGrid rows={rows} locale={locale} />;
+    const domain = ["mean", "median"].includes(metric)
+      ? scoreDomain(details.primary, draft.mode)
+      : undefined;
+    const xKind: "country" | "wave" | null = draft.grouping === "country_wave"
+      ? (layout === "country" ? "wave" : "country")
+      : draft.grouping === "wave" ? "wave"
+        : draft.grouping === "country" ? "country" : null;
+    const seriesKind: "country" | "wave" | null = draft.grouping === "country_wave"
+      ? (layout === "country" ? "country" : "wave")
+      : null;
+    if (xKind) {
+      const contexts = [...new Set(rows.map((row) => dimensionValue(row, xKind) ?? dimensionLabel(row, locale)))];
+      const series = seriesKind
+        ? [...new Set(rows.map((row) => dimensionValue(row, seriesKind) ?? bi(locale, "Result", "結果")))]
+        : [STATISTIC_LABELS[locale][metric]];
+      const data = contexts.map((context) => {
+        const item: Record<string, string | number> = { context };
+        rows.filter((row) => (dimensionValue(row, xKind) ?? dimensionLabel(row, locale)) === context).forEach((row) => {
+          item[seriesKind ? dimensionValue(row, seriesKind) ?? bi(locale, "Result", "結果") : series[0]] = Number(row.estimate);
+        });
         return item;
       });
-      return <><div className="chart-note">{bi(locale, "Each wave is a separate cross-sectional sample; lines only help show change over time.", "各波次為不同的橫截面樣本；連線僅用於協助觀察變化。")}</div><div className="chart-wrap" style={{ height: resultChartHeight("line", data.length, series.length) }}><ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{ top: 14, right: 28, bottom: 18, left: 8 }}><CartesianGrid stroke="#E4E0D6" vertical={false} /><XAxis dataKey="context" /><YAxis domain={domain} tickFormatter={(value) => formatNumber(value, 1, locale)} /><Tooltip formatter={(value) => formatNumber(value, 2, locale)} /><Legend />{series.map((name, index) => <Line key={name} type="linear" dataKey={name} stroke={CHART_COLORS[index % CHART_COLORS.length]} strokeWidth={2.4} dot={{ r: 4 }} />)}</LineChart></ResponsiveContainer></div></>;
+      if (xKind === "wave") {
+        return <><div className="chart-note">{bi(locale, "Each wave is a separate cross-sectional sample; lines only help show change over time.", "各波次為不同的橫截面樣本；連線僅用於協助觀察變化。")}</div><div className="chart-wrap" style={{ height: resultChartHeight("line", data.length, series.length) }}><ResponsiveContainer width="100%" height="100%"><LineChart data={data} margin={{ top: 14, right: 28, bottom: 18, left: 8 }}><CartesianGrid stroke="#E4E0D6" vertical={false} /><XAxis dataKey="context" /><YAxis domain={domain} tickFormatter={(value) => formatNumber(value, metric === "base_n" ? 0 : 1, locale)} /><Tooltip formatter={(value) => formatNumber(value, metric === "base_n" ? 0 : 2, locale)} /><Legend />{series.map((name, index) => <Line key={name} type="linear" dataKey={name} stroke={CHART_COLORS[index % CHART_COLORS.length]} strokeWidth={2.4} dot={{ r: 4 }} connectNulls={false} />)}</LineChart></ResponsiveContainer></div></>;
+      }
+      return <div className="chart-wrap" style={{ height: resultChartHeight("bar", data.length, series.length) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={data} layout="vertical" margin={{ top: 12, right: 26, bottom: 12, left: 22 }}><CartesianGrid stroke="#E4E0D6" horizontal={false} /><XAxis type="number" domain={domain} tickFormatter={(value) => formatNumber(value, metric === "base_n" ? 0 : 1, locale)} /><YAxis type="category" dataKey="context" width={categoryAxisWidth(data.map((item) => item.context))} /><Tooltip formatter={(value) => formatNumber(value, metric === "base_n" ? 0 : 2, locale)} /><Legend />{series.map((name, index) => <Bar key={name} dataKey={name} fill={CHART_COLORS[index % CHART_COLORS.length]} maxBarSize={23} />)}</BarChart></ResponsiveContainer></div>;
     }
     const data = rows.map((row) => ({ context: row.label ? `${dimensionLabel(row, locale)} · ${row.label}` : dimensionLabel(row, locale), value: Number(row.estimate), n: row.base_n }));
-    return <div className="chart-wrap" style={{ height: resultChartHeight("bar", data.length) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={data} layout="vertical" margin={{ top: 12, right: 26, bottom: 12, left: 22 }}><CartesianGrid stroke="#E4E0D6" horizontal={false} /><XAxis type="number" domain={domain} /><YAxis type="category" dataKey="context" width={categoryAxisWidth(data.map((item) => item.context))} /><Tooltip formatter={(value) => formatNumber(value, 2, locale)} /><Bar dataKey="value" name={preferred === "mean" ? bi(locale, "Mean", "平均值") : bi(locale, "Median position", "中位位置")} fill="#1F6F9C" maxBarSize={25} /></BarChart></ResponsiveContainer></div>;
+    return <div className="chart-wrap" style={{ height: resultChartHeight("bar", data.length) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={data} layout="vertical" margin={{ top: 12, right: 26, bottom: 12, left: 22 }}><CartesianGrid stroke="#E4E0D6" horizontal={false} /><XAxis type="number" domain={domain} /><YAxis type="category" dataKey="context" width={categoryAxisWidth(data.map((item) => item.context))} /><Tooltip formatter={(value) => formatNumber(value, metric === "base_n" ? 0 : 2, locale)} /><Bar dataKey="value" name={STATISTIC_LABELS[locale][metric]} fill="#1F6F9C" maxBarSize={25} /></BarChart></ResponsiveContainer></div>;
   }
   if (result.result_type === "distribution" || result.result_type === "multi_response") {
     const distributionData = (rows: ResultRow[], context: (row: ResultRow) => string) => {
@@ -2155,12 +2379,14 @@ function ResultChart({ envelope, details, locale }: { envelope: AnalysisEnvelope
       ? <div className="chart-note">{bi(locale, `This is a multiple-response question. Respondents may select more than one option, so percentages within a scope can exceed 100% (largest total: ${formatNumber(largestTotal, 2, locale)}%).`, `這是多選題；同一受訪者可選擇多個選項，因此單一範圍內的比例合計可能超過 100%（最高合計 ${formatNumber(largestTotal, 2, locale)}%）。`)}</div>
       : null;
     if (draft.grouping === "country_wave") {
-      const countries = [...new Set(result.rows.map((row) => dimensionValue(row, "country")).filter((value): value is string => Boolean(value)))];
-      return <>{note}<div className="distribution-facets">{countries.map((country) => {
-        const rows = result.rows.filter((row) => dimensionValue(row, "country") === country);
-        const series = [...new Set(rows.map((row) => dimensionValue(row, "wave") ?? bi(locale, "Result", "結果")))];
-        const data = distributionData(rows, (row) => dimensionValue(row, "wave") ?? bi(locale, "Result", "結果"));
-        return <section className="distribution-facet" key={country}><header><strong>{country}</strong><span>{bi(locale, "Waves shown separately", "各波次分別呈現")}</span></header><div className="chart-wrap distribution" style={{ height: resultChartHeight("distribution", data.length, series.length) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={data} layout="vertical" margin={{ top: 10, right: 24, bottom: 10, left: 20 }}><CartesianGrid stroke="#E4E0D6" horizontal={false} /><XAxis type="number" domain={[0, 100]} tickFormatter={(value) => `${value}%`} /><YAxis type="category" dataKey="label" width={categoryAxisWidth(data.map((item) => item.label))} interval={0} /><Tooltip formatter={(value) => `${formatNumber(value, 2, locale)}%`} /><Legend />{series.map((name, index) => <Bar key={name} dataKey={name} fill={CHART_COLORS[index % CHART_COLORS.length]} maxBarSize={23} />)}</BarChart></ResponsiveContainer></div></section>;
+      const facetKind = layout === "country" ? "country" : "wave";
+      const seriesKind = layout === "country" ? "wave" : "country";
+      const facets = [...new Set(result.rows.map((row) => dimensionValue(row, facetKind)).filter((value): value is string => Boolean(value)))];
+      return <>{note}<div className="distribution-facets">{facets.map((facet) => {
+        const rows = result.rows.filter((row) => dimensionValue(row, facetKind) === facet);
+        const series = [...new Set(rows.map((row) => dimensionValue(row, seriesKind) ?? bi(locale, "Result", "結果")))];
+        const data = distributionData(rows, (row) => dimensionValue(row, seriesKind) ?? bi(locale, "Result", "結果"));
+        return <section className="distribution-facet" key={facet}><header><strong>{facet}</strong><span>{layout === "country" ? bi(locale, "Waves shown separately", "各波次分別呈現") : bi(locale, "Countries shown separately", "各國家分別呈現")}</span></header><div className="chart-wrap distribution" style={{ height: resultChartHeight("distribution", data.length, series.length) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={data} layout="vertical" margin={{ top: 10, right: 24, bottom: 10, left: 20 }}><CartesianGrid stroke="#E4E0D6" horizontal={false} /><XAxis type="number" domain={[0, 100]} tickFormatter={(value) => `${value}%`} /><YAxis type="category" dataKey="label" width={categoryAxisWidth(data.map((item) => item.label))} interval={0} /><Tooltip formatter={(value) => `${formatNumber(value, 2, locale)}%`} /><Legend />{series.map((name, index) => <Bar key={name} dataKey={name} fill={CHART_COLORS[index % CHART_COLORS.length]} maxBarSize={23} />)}</BarChart></ResponsiveContainer></div></section>;
       })}</div></>;
     }
     const data = distributionData(result.rows, (row) => dimensionLabel(row, locale));
@@ -2190,8 +2416,7 @@ function CrosstabMatrix({ envelope, details, locale }: { envelope: AnalysisEnvel
 }
 
 function StatisticGrid({ rows, locale }: { rows: ResultRow[]; locale: Locale }) {
-  const visible = rows.filter((row) => row.metric !== "base_n");
-  return <div className="stat-grid">{visible.map((row, index) => <div key={`${row.metric}-${index}`}><span>{METRIC_LABELS[locale][String(row.metric)] ?? bi(locale, "Statistic", "統計量")}</span><strong>{formatNumber(row.estimate, 2, locale)}</strong><small>{row.label ?? dimensionLabel(row, locale)} · n={formatNumber(row.base_n, 0, locale)}</small></div>)}</div>;
+  return <div className="stat-grid">{rows.map((row, index) => <div key={`${row.metric}-${index}`}><span>{METRIC_LABELS[locale][String(row.metric)] ?? bi(locale, "Statistic", "統計量")}</span><strong>{formatNumber(row.estimate, row.metric === "base_n" ? 0 : 2, locale)}</strong><small>{row.label ?? dimensionLabel(row, locale)}{row.metric !== "base_n" && row.base_n != null ? ` · n=${formatNumber(row.base_n, 0, locale)}` : ""}</small></div>)}</div>;
 }
 
 function flattenRow(row: ResultRow, locale: Locale): Record<string, unknown> {
@@ -2203,6 +2428,30 @@ function flattenRow(row: ResultRow, locale: Locale): Record<string, unknown> {
 }
 
 function ResultTable({ envelope, details, locale }: { envelope: AnalysisEnvelope; details: ResultDetails; locale: Locale }) {
+  if (envelope.result.result_type === "summary") {
+    const metricOrder = ["mean", "median", "sd", "q25", "q75", "min", "max", "base_n"];
+    const contexts = new Map<string, Record<string, unknown>>();
+    envelope.result.rows.forEach((row) => {
+      const context = dimensionLabel(row, locale);
+      const item = contexts.get(context) ?? { context };
+      if (row.metric) item[row.metric] = row.estimate;
+      if (row.metric && row.label) item[`${row.metric}_label`] = row.label;
+      if (item.base_n == null && row.base_n != null) item.base_n = row.base_n;
+      contexts.set(context, item);
+    });
+    const rows = [...contexts.values()];
+    const metrics = metricOrder.filter((metric) =>
+      rows.some((row) => row[metric] !== null && row[metric] !== undefined),
+    );
+    return (
+      <div className="table-wrap result-table summary-result-table">
+        <table>
+          <thead><tr><th>{bi(locale, "Analysis scope", "分析範圍")}</th>{metrics.map((metric) => <th key={metric}>{METRIC_LABELS[locale][metric]}</th>)}</tr></thead>
+          <tbody>{rows.map((row) => <tr key={String(row.context)}><td>{String(row.context)}</td>{metrics.map((metric) => <td key={metric}>{formatNumber(row[metric], metric === "base_n" ? 0 : 2, locale)}{row[`${metric}_label`] ? ` · ${String(row[`${metric}_label`])}` : ""}</td>)}</tr>)}</tbody>
+        </table>
+      </div>
+    );
+  }
   const rows = envelope.result.rows.map((row) => flattenRow(row, locale));
   const redundantRawValueKey = rows.every((row) =>
     row.raw_value_key === undefined

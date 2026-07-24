@@ -1,6 +1,8 @@
 export type Mode = "category" | "order" | "continuous";
 export type Operation = "distribution" | "summary" | "crosstab" | "relationship" | "multi_response";
 export type Grouping = "none" | "country" | "wave" | "country_wave" | "survey_variable";
+export type MatchBand = "high" | "related" | "broad";
+export type MatchReason = "exact_id" | "question_phrase" | "question_terms" | "topic_terms";
 
 export interface Country {
   country_code: number;
@@ -17,6 +19,8 @@ export interface Question {
   topic_label: string;
   modes: Mode[];
   waves: number[];
+  match_band?: MatchBand;
+  match_reasons?: MatchReason[];
 }
 
 export interface Context {
@@ -213,6 +217,8 @@ export interface ConversationOption {
   label: string;
   value: string;
   description: string | null;
+  match_band?: MatchBand;
+  match_reasons?: MatchReason[];
 }
 
 export interface ConversationAppliedDelta {

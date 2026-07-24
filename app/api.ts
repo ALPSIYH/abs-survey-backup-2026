@@ -739,31 +739,47 @@ function normalizeQuery(query: string): string {
   }
   return expanded
     .replace(
-      /\b(?:mean|average|distribution|median|quartiles?|standard deviation|trend|wave|waves|country|countries|respondents?)\b/giu,
+      /\b(?:mean|average|distribution|median|quartiles?|standard deviation|trend|wave|waves|country|countries|respondents?|which|what|find|show|questions?|survey|about|related|are|is|the|to|with|of)\b/giu,
       " ",
     )
     .replace(
-      /(?:平均分?|分佈|分布|中位數?|中位回答|四分位數?|標準差|标准差|趨勢|趋势|波次|國家|国家|受訪者|受访者)/gu,
+      /(?:平均分?|分佈|分布|中位數?|中位回答|四分位數?|標準差|标准差|趨勢|趋势|波次|國家|国家|受訪者|受访者|哪些|什麼|什么|有關|有关|相關|相关|題目|题目|問題|问题|請找|请找|幫我找|帮我找)/gu,
       " ",
     )
     .replace(/[^\p{L}\p{N}.]+/gu, " ")
     .trim();
 }
 
-function searchScore(questionItem: Question, query: string): number {
+export function catalogMatch(questionItem: Question, query: string): {
+  score: number;
+  band: Question["match_band"];
+  reasons: NonNullable<Question["match_reasons"]>;
+} {
   const normalized = normalizeQuery(query);
-  const exactId = query.match(/\bq\d+(?:\.\d+)?\b/i)?.[0]?.toLowerCase();
-  if (exactId === questionItem.variable_id.toLowerCase()) return 10_000;
+  const mentionedIds = [...query.matchAll(/\bq\d+(?:\.\d+)?\b/gi)].map(
+    (match) => match[0].toLowerCase(),
+  );
   const tokens = normalized.split(/\s+/).filter((token) => token.length > 1);
-  if (!tokens.length) return 0;
+  if (!tokens.length) return { score: 0, band: "broad", reasons: [] };
   const questionText = questionItem.question_text.normalize("NFKC").toLowerCase();
   const topicText = questionItem.topic_label.normalize("NFKC").toLowerCase();
   const idText = questionItem.variable_id.toLowerCase();
-  let score = 0;
+  const reasons: NonNullable<Question["match_reasons"]> = [];
+  const exactIdMentioned = mentionedIds.includes(idText);
+  let score = exactIdMentioned ? 1_000 : 0;
+  if (exactIdMentioned) reasons.push("exact_id");
   if (normalized === idText) score += 2_000;
-  if (questionText.includes(normalized)) score += 500 + normalized.length * 3;
-  if (topicText.includes(normalized)) score += 120 + normalized.length;
+  if (questionText.includes(normalized)) {
+    score += 500 + normalized.length * 3;
+    reasons.push("question_phrase");
+  }
+  if (topicText.includes(normalized)) {
+    score += 120 + normalized.length;
+    reasons.push("topic_terms");
+  }
   let matchedTokens = 0;
+  let questionMatches = 0;
+  let topicMatches = 0;
   for (const token of tokens) {
     if (idText === token) {
       score += 1_000;
@@ -774,23 +790,41 @@ function searchScore(questionItem: Question, query: string): number {
       const positionBonus = questionText.startsWith(token) ? 24 : 0;
       score += 42 + token.length * 5 + positionBonus;
       matchedTokens += 1;
+      questionMatches += 1;
       continue;
     }
     if (topicText.includes(token)) {
       score += 16 + token.length * 2;
       matchedTokens += 1;
+      topicMatches += 1;
     }
   }
+  if (
+    questionMatches
+    && !reasons.includes("question_phrase")
+    && !reasons.includes("question_terms")
+  ) reasons.push("question_terms");
+  if (topicMatches && !reasons.includes("topic_terms")) reasons.push("topic_terms");
   const coverage = matchedTokens / tokens.length;
   if (coverage === 1) score += 180;
   else if (coverage >= 0.6) score += 60;
-  return score * (0.35 + coverage);
+  const finalScore = score * (0.35 + coverage);
+  const band = normalized === idText
+      || (questionText.includes(normalized) && tokens.length >= 2)
+      || (coverage === 1 && matchedTokens >= 2)
+    ? "high"
+    : coverage >= 0.6 ? "related" : "broad";
+  return { score: finalScore, band, reasons: reasons.slice(0, 2) };
 }
 
 async function catalogSearch(query: string, limit = 199): Promise<CatalogSearchResponse> {
   const data = await bootstrap();
   const matches = data.questions
-    .map((item) => ({ item, score: searchScore(item, query) }))
+    .map((item) => ({ item, match: catalogMatch(item, query) }))
+    .map(({ item, match }) => ({
+      item: { ...item, match_band: match.band, match_reasons: match.reasons },
+      score: match.score,
+    }))
     .filter(({ score }) => score > 0)
     .sort((left, right) =>
       right.score - left.score
@@ -1304,6 +1338,8 @@ function questionOptions(items: Question[]): ConversationOption[] {
     label: `${item.variable_id} · ${item.question_text}`,
     value: item.variable_id,
     description: item.waves.map((wave) => `W${wave}`).join(", "),
+    match_band: item.match_band,
+    match_reasons: item.match_reasons,
   }));
 }
 

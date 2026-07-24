@@ -26,7 +26,7 @@ globalThis.fetch = async (input: string | URL | Request): Promise<Response> => {
   }
 };
 
-const { api } = await import("../app/api");
+const { api, catalogMatch } = await import("../app/api");
 const { localizeAssistantMessage, localizeOptionLabel } = await import("../app/i18n");
 
 function draft(
@@ -85,6 +85,33 @@ test("catalog search returns a ranked complete candidate pool", async () => {
   assert.ok(result.questions.every((question) =>
     /government/i.test(`${question.question_text} ${question.topic_label}`),
   ));
+  assert.ok(result.questions.every((question) =>
+    ["high", "related", "broad"].includes(String(question.match_band)),
+  ));
+  assert.ok(result.questions.every((question) =>
+    Array.isArray(question.match_reasons) && question.match_reasons.length > 0,
+  ));
+  assert.equal(
+    (await api.catalogSearch("q95")).questions[0]?.variable_id,
+    "q95",
+  );
+  assert.equal(
+    (await api.catalogSearch("q95")).questions[0]?.match_band,
+    "high",
+  );
+  const q95 = (await api.bootstrap()).questions.find((item) => item.variable_id === "q95");
+  assert.ok(q95);
+  assert.notEqual(catalogMatch(q95, "q95 unrelated nonsense").band, "high");
+  const governmentMatch = catalogMatch(result.questions[0], "government");
+  assert.equal(
+    new Set(governmentMatch.reasons).size,
+    governmentMatch.reasons.length,
+  );
+  const chinaInfluence = await api.catalogSearch(
+    "Which questions are about China's influence?",
+  );
+  assert.ok(["q177", "q178"].includes(chinaInfluence.questions[0]?.variable_id));
+  assert.equal(chinaInfluence.questions[0]?.match_band, "high");
 });
 
 test("continuous summaries reproduce aggregate q95 values", async () => {
