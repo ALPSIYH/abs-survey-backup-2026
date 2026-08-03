@@ -210,8 +210,8 @@ const COUNTRY_ALIASES: Array<[number, RegExp]> = [
   [14, /(?:\bmyanmar\b|\bburmese\b|緬甸(?:人)?|缅甸(?:人)?)/iu],
   [15, /(?:\baustralia(?:n)?\b|澳洲(?:人)?|澳大利亞(?:人)?|澳大利亚(?:人)?)/iu],
   [18, /(?:\bindia(?:n)?\b|印度(?:人)?)/iu],
-  [19, /(?:\bnew\s*zealand(?:er)?\b|紐西蘭(?:人)?|新西兰(?:人)?)/iu],
-  [20, /(?:\btimor[-\s]?leste\b|東帝汶(?:人)?|东帝汶(?:人)?)/iu],
+  [19, /(?:\bbangladesh(?:i)?\b|孟加拉(?:國|国)?(?:人)?)/iu],
+  [20, /(?:\bsri\s*lanka(?:n)?\b|\bsrilanka(?:n)?\b|斯里蘭卡(?:人)?|斯里兰卡(?:人)?)/iu],
 ];
 
 const COUNTRY_NAMES = new Map<number, string>([
@@ -231,9 +231,24 @@ const COUNTRY_NAMES = new Map<number, string>([
   [14, "Myanmar"],
   [15, "Australia"],
   [18, "India"],
-  [19, "New Zealand"],
-  [20, "Timor-Leste"],
+  [19, "Bangladesh"],
+  [20, "Sri Lanka"],
 ]);
+
+const UNSUPPORTED_RESPONDENT_COUNTRIES: Array<[string, RegExp]> = [
+  [
+    "United States",
+    /^(?:americans?|美國人|美国人)[？?!.。]*$|(?:american|united states)\s+(?:respondents?|sample|survey data)|(?:美國|美国)(?:的)?(?:人|受訪者|受访者|樣本|样本)(?:的)?(?:數據|数据|資料|资料|樣本|样本|調查|调查)?|(?:我要看|改成|換成|换成|受訪者(?:是|改成)?|受访者(?:是|改成)?|樣本(?:是|改成)?|样本(?:是|改成)?)[^。！？!?\n]{0,16}(?:美國人|美国人)/iu,
+  ],
+  [
+    "New Zealand",
+    /^(?:new\s*zealanders?|紐西蘭人|纽西兰人|新西蘭人|新西兰人)[？?!.。]*$|(?:new\s*zealand(?:er)?)\s+(?:respondents?|sample|survey data)|(?:紐西蘭|纽西兰|新西蘭|新西兰)(?:的)?(?:人|受訪者|受访者|樣本|样本)/iu,
+  ],
+  [
+    "Timor-Leste",
+    /^(?:timorese|東帝汶人|东帝汶人)[？?!.。]*$|(?:timor[-\s]?leste|east\s+timor|timorese)\s+(?:respondents?|sample|survey data)|(?:東帝汶|东帝汶)(?:的)?(?:人|受訪者|受访者|樣本|样本)/iu,
+  ],
+];
 
 function nextId(prefix: string): string {
   sequence += 1;
@@ -953,7 +968,7 @@ function parseCountries(message: string): {
   values: number[];
   operation: "set" | "add" | "remove";
   all: boolean;
-  unsupported: boolean;
+  unsupported: string | null;
 } {
   const normalized = message.normalize("NFKC");
   const values = COUNTRY_ALIASES.filter(([, pattern]) => pattern.test(normalized)).map(
@@ -967,10 +982,8 @@ function parseCountries(message: string): {
   );
   const all = ALL_COUNTRIES_PATTERN.test(normalized);
   const unsupported =
-    /^(?:americans?|美國人|美国人)[？?!.。]*$/iu.test(normalized.trim()) ||
-    /(?:american|united states)\s+(?:respondents?|sample|survey data)|(?:美國|美国)(?:的)?(?:人|受訪者|受访者|樣本|样本)(?:的)?(?:數據|数据|資料|资料|樣本|样本|調查|调查)?|(?:我要看|改成|換成|换成|受訪者(?:是|改成)?|受访者(?:是|改成)?|樣本(?:是|改成)?|样本(?:是|改成)?)[^。！？!?\n]{0,16}(?:美國人|美国人)/iu.test(
-      normalized,
-    );
+    UNSUPPORTED_RESPONDENT_COUNTRIES.find(([, pattern]) => pattern.test(normalized.trim()))?.[0] ??
+    null;
   return {
     values: [...new Set(values)],
     operation: remove ? "remove" : add ? "add" : "set",
@@ -1589,7 +1602,7 @@ async function sendConversationMessage(
   if (countries.unsupported) {
     state.pending = null;
     state.options = [];
-    const reply = "目前的 ABS 資料沒有 United States 的受訪者樣本；目前結果未被修改。";
+    const reply = `目前的 ABS 資料沒有 ${countries.unsupported} 的受訪者樣本；目前結果未被修改。`;
     addTurn(state, "assistant", reply);
     return publicConversation(state, "unsupported", "unsupported", reply);
   }

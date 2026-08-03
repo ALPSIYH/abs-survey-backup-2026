@@ -79,6 +79,13 @@ test("packages the complete aggregate-only cloud dataset", async () => {
   assert.equal(catalog.dataset.dataMode, "aggregate-only");
   assert.equal(catalog.questions.length, 199);
   assert.equal(catalog.countries.length, 18);
+  assert.deepEqual(
+    catalog.countries.filter(({ code }) => code === 19 || code === 20),
+    [
+      { code: 19, name: "Bangladesh" },
+      { code: 20, name: "Sri Lanka" },
+    ],
+  );
   assert.equal(catalog.responseSets.length, 2);
   assert.equal(questionFiles.filter((name) => name.endsWith(".json")).length, 199);
   assert.equal(responseSetFiles.filter((name) => name.endsWith(".json")).length, 2);

@@ -64,6 +64,13 @@ test("bootstrap exposes the complete reviewed cloud catalog", async () => {
   assert.equal(data.dataset.question_count, 199);
   assert.equal(data.dataset.source_rows, 118_961);
   assert.equal(data.countries.length, 18);
+  assert.deepEqual(
+    data.countries.filter((country) => country.country_code >= 19),
+    [
+      { country_code: 19, display_name: "Bangladesh" },
+      { country_code: 20, display_name: "Sri Lanka" },
+    ],
+  );
   assert.deepEqual(data.waves, [1, 2, 3, 4, 5, 6]);
   assert.deepEqual(
     data.response_sets.map((item) => item.response_set_id).sort(),
@@ -361,6 +368,27 @@ test("assistant rejects unsupported respondent samples even with another place i
     localizeAssistantMessage("zh-Hant", correction.message),
     correction.message,
   );
+});
+
+test("assistant maps Bangladesh and Sri Lanka without reusing old country labels", async () => {
+  const conversation = await api.createConversation();
+  const response = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "q95 Bangladesh and Sri Lanka mean W5",
+    conversation.revision,
+  );
+  assert.equal(response.status, "answered");
+  assert.deepEqual(response.active_snapshot?.draft.countries, [19, 20]);
+
+  for (const prompt of ["New Zealand respondents", "Timorese respondents"]) {
+    const next = await api.createConversation();
+    const rejected = await api.sendConversationMessage(
+      next.conversation_id,
+      prompt,
+      next.revision,
+    );
+    assert.equal(rejected.status, "unsupported", prompt);
+  }
 });
 
 test("assistant searches Chinese topics and returns explicit question choices", async () => {

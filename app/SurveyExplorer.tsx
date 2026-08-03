@@ -63,8 +63,8 @@ const COUNTRY_ZH: Record<string, string> = {
   Myanmar: "緬甸",
   Australia: "澳洲",
   India: "印度",
-  "New Zealand": "紐西蘭",
-  "Timor-Leste": "東帝汶",
+  Bangladesh: "孟加拉國",
+  "Sri Lanka": "斯里蘭卡",
 };
 
 const SEARCH_ALIASES: Record<string, string> = {

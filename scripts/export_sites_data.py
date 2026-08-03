@@ -10,27 +10,6 @@ from pathlib import Path
 import duckdb
 
 
-COUNTRIES = {
-    1: "Japan",
-    2: "Hong Kong",
-    3: "South Korea",
-    4: "Mainland China",
-    5: "Mongolia",
-    6: "Philippines",
-    7: "Taiwan",
-    8: "Thailand",
-    9: "Indonesia",
-    10: "Singapore",
-    11: "Vietnam",
-    12: "Cambodia",
-    13: "Malaysia",
-    14: "Myanmar",
-    15: "Australia",
-    18: "India",
-    19: "New Zealand",
-    20: "Timor-Leste",
-}
-
 TOPICS = (
     ("economic_conditions", "Economic and household conditions", "經濟與家庭狀況", 1, 6),
     ("institutional_trust", "Institutional and media trust", "制度與媒體信任", 7, 19),
@@ -89,6 +68,20 @@ def export(database: Path, output: Path) -> None:
     ).fetchone()
     if manifest is None:
         raise RuntimeError("Merged-only manifest is missing")
+
+    countries = {
+        int(row[0]): str(row[1])
+        for row in connection.execute(
+            """
+            SELECT CAST(raw_value AS INTEGER), category_label
+            FROM semantic.role_value_settings
+            WHERE variable_id = 'country'
+              AND category_status = 'included'
+              AND observed
+            ORDER BY raw_value
+            """
+        ).fetchall()
+    }
 
     question_rows = connection.execute(
         """
@@ -243,7 +236,7 @@ def export(database: Path, output: Path) -> None:
                 "dataMode": "aggregate-only",
             },
             "countries": [
-                {"code": code, "name": name} for code, name in COUNTRIES.items()
+                {"code": code, "name": name} for code, name in countries.items()
             ],
             "waves": [1, 2, 3, 4, 5, 6],
             "topics": topics,
