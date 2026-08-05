@@ -41,7 +41,8 @@ import {
   YAxis,
   ZAxis,
 } from "recharts";
-import { api, catalogMatch } from "./api";
+import { catalogMatch } from "./api";
+import { api } from "./live-api";
 import { missingScopeCells } from "./coverage";
 import {
   DEFAULT_LOCALE,
@@ -1791,8 +1792,10 @@ function App() {
       <aside className="assistant-panel" aria-busy={assistantBusy}>
         <div className="assistant-heading">
           <div><Bot size={19} /><span><strong>{bi(locale, "Analysis assistant", "分析助理")}</strong><small>{bootstrap.assistant.available
-            ? bootstrap.assistant.provider === "direct_ollama"
-              ? bi(locale, "Local model and verified statistics connected", "本機模型與統計已連線")
+            ? bootstrap.assistant.provider === "local"
+              ? bi(locale, "V8.2 model and verified statistics connected", "V8.2 模型與統計已連線")
+              : bootstrap.assistant.provider === "direct_ollama"
+                ? bi(locale, "Local model and verified statistics connected", "本機模型與統計已連線")
               : bootstrap.assistant.provider === "deepseek"
                 ? bi(locale, "Cloud model and verified statistics connected", "雲端模型與統計已連線")
                 : bi(locale, "Cloud catalog and statistics connected", "雲端題庫與統計已連線")
