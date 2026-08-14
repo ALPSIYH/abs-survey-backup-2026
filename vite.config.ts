@@ -15,6 +15,10 @@ const localBindingConfig = {
   name: "abs-survey-cloud-2026",
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
+  assets: {
+    binding: "ASSETS",
+    run_worker_first: true,
+  },
   d1_databases: d1
     ? [
         {

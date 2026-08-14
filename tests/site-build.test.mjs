@@ -43,9 +43,15 @@ test("server-renders the finished survey explorer", async () => {
 });
 
 test("packages the independent static first screen into Cloudflare assets", async () => {
-  const html = await readFile(new URL("../dist/client/index.html", import.meta.url), "utf8");
+  const [html, wranglerText] = await Promise.all([
+    readFile(new URL("../dist/client/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../dist/server/wrangler.json", import.meta.url), "utf8"),
+  ]);
+  const wrangler = JSON.parse(wranglerText);
   assert.match(html, /Asian Barometer Survey Explorer/u);
   assert.match(html, /<script[^>]+src="\.\/assets\//u);
+  assert.equal(wrangler.assets?.binding, "ASSETS");
+  assert.equal(wrangler.assets?.run_worker_first, true);
 });
 
 test("presents generic local and cloud runtime status", async () => {
