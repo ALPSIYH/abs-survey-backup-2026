@@ -48,10 +48,12 @@ test("packages the independent static first screen into Cloudflare assets", asyn
   assert.match(html, /<script[^>]+src="\.\/assets\//u);
 });
 
-test("presents local V8.2 as primary and DeepSeek only as fallback", async () => {
+test("presents generic local and cloud runtime status", async () => {
   const source = await readFile(new URL("../app/App.tsx", import.meta.url), "utf8");
-  assert.match(source, /Local V8\.2 primary connected · DeepSeek fallback ready/u);
-  assert.doesNotMatch(source, /Cloud model and verified statistics connected/u);
+  assert.match(source, /Local model connected/u);
+  assert.match(source, /Cloud API \(local not connected; no direct data access\)/u);
+  assert.match(source, /云端 API（因本地未连接，不会直接接触数据）/u);
+  assert.doesNotMatch(source, /Local V8\.2 primary connected · DeepSeek fallback ready/u);
 });
 
 test("public deployment cannot invoke a model without a configured server secret", async () => {
