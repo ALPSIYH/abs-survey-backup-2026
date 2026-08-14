@@ -28,7 +28,7 @@ function isAllowedPath(pathname: string): boolean {
     /^\/api\/v1\/(?:health|bootstrap|assistant\/status)$/u,
     /^\/api\/v1\/(?:catalog\/search|analyses|drafts\/validate|assistant\/plans)$/u,
     /^\/api\/v1\/(?:questions|response-sets)\/q?[a-z0-9._-]+$/iu,
-    /^\/api\/v1\/conversations(?:\/[a-z0-9-]+\/(?:messages|new-question))?$/iu,
+    /^\/api\/v1\/conversations(?:\/[a-z0-9_-]+\/(?:messages|new-question))?$/iu,
   ].some((pattern) => pattern.test(pathname));
 }
 
@@ -47,7 +47,7 @@ async function proxy(request: NextRequest): Promise<NextResponse> {
   const origin = liveApiOrigin();
   if (!origin) {
     return NextResponse.json(
-      { detail: "The optional V8.2 bridge is not configured; the independent site remains available." },
+      { detail: "The primary local V8.2 service is not configured; DeepSeek and deterministic analysis remain available as fallback." },
       { status: 503, headers: { "Cache-Control": "no-store" } },
     );
   }
@@ -98,7 +98,11 @@ async function proxy(request: NextRequest): Promise<NextResponse> {
       headers: {
         "Cache-Control": "no-store",
         "Content-Type": response.headers.get("content-type") ?? "application/json",
-        "X-Survey-Bridge": "v8.2-optional",
+        "X-Survey-Bridge": "v8.2-primary",
+        "X-Survey-Primary": "local-v8.2-2b",
+        "X-Survey-Fallback": "deepseek-v4-flash",
+        "X-Survey-Model-Path": "local-v8.2-2b",
+        "X-Survey-Channel": "sites-gateway-8511",
       },
     });
   } catch {

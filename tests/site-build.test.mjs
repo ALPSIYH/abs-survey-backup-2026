@@ -68,7 +68,7 @@ test("public deployment cannot invoke a model without a configured server secret
   assert.equal(response.status, 503);
 });
 
-test("optional local bridge is fail-closed when no durable origin is configured", async () => {
+test("primary local bridge fails closed when no durable origin is configured", async () => {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("bridge-disabled-test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
@@ -87,7 +87,7 @@ test("optional local bridge is fail-closed when no durable origin is configured"
     { waitUntil() {}, passThroughOnException() {} },
   );
   assert.equal(response.status, 503);
-  assert.match((await response.json()).detail, /optional V8\.2 bridge is not configured/i);
+  assert.match((await response.json()).detail, /primary local V8\.2 service is not configured/i);
 });
 
 test("packages the complete aggregate-only cloud dataset", async () => {

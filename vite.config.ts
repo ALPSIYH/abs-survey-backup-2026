@@ -12,6 +12,7 @@ const { d1, r2 } = hostingConfig;
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 const localBindingConfig = {
+  name: "abs-survey-cloud-2026",
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
   d1_databases: d1
@@ -31,6 +32,13 @@ const localBindingConfig = {
         },
       ]
     : [],
+  vpc_services: [
+    {
+      binding: "SURVEY_V82_API",
+      service_id: "019fff82-abab-70f0-93d0-5d15361df5a0",
+      remote: true,
+    },
+  ],
 };
 
 export default defineConfig(async () => {

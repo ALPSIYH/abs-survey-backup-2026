@@ -16,7 +16,9 @@ interface BridgeHealth {
 type EmbeddedDataset = Awaited<ReturnType<Backend["bootstrap"]>>["dataset"];
 
 const HEALTH_TIMEOUT_MS = 2_500;
-let backendPromise: Promise<Backend> | null = null;
+const BRIDGE_RECHECK_MS = 10_000;
+let bridgeAvailabilityPromise: Promise<boolean> | null = null;
+let bridgeAvailability = { value: false, expiresAt: 0 };
 
 function isIndependentStaticBuild(): boolean {
   if (typeof document === "undefined") return true;
@@ -63,35 +65,113 @@ export function bridgeMatchesEmbeddedRelease(
   );
 }
 
-async function selectBackend(): Promise<Backend> {
-  if (isIndependentStaticBuild() || typeof window === "undefined") return staticApi;
+async function probeBridge(): Promise<boolean> {
+  if (isIndependentStaticBuild() || typeof window === "undefined") return false;
   const [health, embedded] = await Promise.all([
     bridgeHealth(),
     staticApi.bootstrap(),
   ]);
-  return bridgeMatchesEmbeddedRelease(health, embedded.dataset)
-    ? liveApi as Backend
-    : staticApi;
+  return bridgeMatchesEmbeddedRelease(health, embedded.dataset);
 }
 
-function backend(): Promise<Backend> {
-  if (!backendPromise) backendPromise = selectBackend();
-  return backendPromise;
+async function bridgeAvailable(): Promise<boolean> {
+  if (isIndependentStaticBuild() || typeof window === "undefined") return false;
+  if (Date.now() < bridgeAvailability.expiresAt) return bridgeAvailability.value;
+  if (!bridgeAvailabilityPromise) {
+    bridgeAvailabilityPromise = probeBridge()
+      .catch(() => false)
+      .then((value) => {
+        bridgeAvailability = { value, expiresAt: Date.now() + BRIDGE_RECHECK_MS };
+        bridgeAvailabilityPromise = null;
+        return value;
+      });
+  }
+  return bridgeAvailabilityPromise;
+}
+
+function invalidateBridge(): void {
+  bridgeAvailability = { value: false, expiresAt: 0 };
+}
+
+async function preferLocalV82<T>(
+  primary: () => Promise<T>,
+  fallback: () => Promise<T>,
+): Promise<T> {
+  if (await bridgeAvailable()) {
+    try {
+      return await primary();
+    } catch {
+      invalidateBridge();
+    }
+  }
+  return fallback();
+}
+
+async function fallbackConversationMessage(
+  conversationId: string,
+  message: string,
+  expectedRevision: number,
+) {
+  try {
+    return await staticApi.sendConversationMessage(
+      conversationId,
+      message,
+      expectedRevision,
+    );
+  } catch {
+    const replacement = await staticApi.createConversation();
+    return staticApi.sendConversationMessage(
+      replacement.conversation_id,
+      message,
+      replacement.revision,
+    );
+  }
 }
 
 export const api: Backend = {
-  bootstrap: async () => (await backend()).bootstrap(),
-  catalogSearch: async (...args) => (await backend()).catalogSearch(...args),
-  question: async (...args) => (await backend()).question(...args),
-  responseSet: async (...args) => (await backend()).responseSet(...args),
-  assistantStatus: async () => (await backend()).assistantStatus(),
-  analyze: async (...args) => (await backend()).analyze(...args),
-  validate: async (...args) => (await backend()).validate(...args),
-  assistantPlan: async (...args) => (await backend()).assistantPlan(...args),
-  createConversation: async () => (await backend()).createConversation(),
-  sendConversationMessage: async (...args) =>
-    (await backend()).sendConversationMessage(...args),
-  sendConversationCommand: async (...args) =>
-    (await backend()).sendConversationCommand(...args),
-  startNewQuestion: async (...args) => (await backend()).startNewQuestion(...args),
+  bootstrap: () => preferLocalV82(liveApi.bootstrap, staticApi.bootstrap),
+  catalogSearch: (...args) => preferLocalV82(
+    () => liveApi.catalogSearch(...args),
+    () => staticApi.catalogSearch(...args),
+  ),
+  question: (...args) => preferLocalV82(
+    () => liveApi.question(...args),
+    () => staticApi.question(...args),
+  ),
+  responseSet: (...args) => preferLocalV82(
+    () => liveApi.responseSet(...args),
+    () => staticApi.responseSet(...args),
+  ),
+  assistantStatus: () => preferLocalV82(
+    liveApi.assistantStatus,
+    staticApi.assistantStatus,
+  ),
+  analyze: (...args) => preferLocalV82(
+    () => liveApi.analyze(...args),
+    () => staticApi.analyze(...args),
+  ),
+  validate: (...args) => preferLocalV82(
+    () => liveApi.validate(...args),
+    () => staticApi.validate(...args),
+  ),
+  assistantPlan: (...args) => preferLocalV82(
+    () => liveApi.assistantPlan(...args),
+    () => staticApi.assistantPlan(...args),
+  ),
+  createConversation: () => preferLocalV82(
+    liveApi.createConversation,
+    staticApi.createConversation,
+  ),
+  sendConversationMessage: (...args) => preferLocalV82(
+    () => liveApi.sendConversationMessage(...args),
+    () => fallbackConversationMessage(...args),
+  ),
+  sendConversationCommand: (...args) => preferLocalV82(
+    () => liveApi.sendConversationCommand(...args),
+    () => staticApi.sendConversationCommand(...args),
+  ),
+  startNewQuestion: (...args) => preferLocalV82(
+    () => liveApi.startNewQuestion(...args),
+    () => staticApi.startNewQuestion(...args),
+  ),
 };

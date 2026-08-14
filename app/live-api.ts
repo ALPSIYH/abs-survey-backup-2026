@@ -44,7 +44,10 @@ export const api = {
       body: JSON.stringify(draft),
     }),
   validate: (draft: Draft) =>
-    request<{ valid: true; request: Record<string, unknown> }>("/api/v1/drafts/validate", {
+    request<{
+      valid: true;
+      request: { target_id: string | null; countries: number[]; waves: number[] };
+    }>("/api/v1/drafts/validate", {
       method: "POST",
       body: JSON.stringify(draft),
     }),
@@ -74,6 +77,7 @@ export const api = {
     conversationId: string,
     command: ConversationCommand,
     expectedRevision: number,
+    displayLabel?: string,
   ) =>
     request<ConversationResponse>(
       `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
@@ -81,7 +85,7 @@ export const api = {
         method: "POST",
         body: JSON.stringify({
           expected_revision: expectedRevision,
-          input: { type: "command", command },
+          input: { type: "command", command, display_label: displayLabel },
         }),
       },
     ),

@@ -5,6 +5,8 @@ import handler from "vinext/server/app-router-entry";
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  SURVEY_V82_API?: Fetcher;
+  SURVEY_LIVE_API_TOKEN?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -19,6 +21,77 @@ interface ExecutionContext {
   passThroughOnException(): void;
 }
 
+const LOCAL_API_TIMEOUT_MS = 20_000;
+const MAX_BODY_BYTES = 128_000;
+
+function sameOrigin(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+  try {
+    return new URL(origin).origin === new URL(request.url).origin;
+  } catch {
+    return false;
+  }
+}
+
+async function tryLocalV82(request: Request, env: Env): Promise<Response | null> {
+  const binding = env.SURVEY_V82_API;
+  const token = env.SURVEY_LIVE_API_TOKEN?.trim();
+  if (!binding || !token || !sameOrigin(request)) return null;
+
+  const incoming = new URL(request.url);
+  const declaredLength = Number(request.headers.get("content-length") ?? 0);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+    return Response.json(
+      { detail: "The bridge request is too large." },
+      { status: 413, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
+  const headers = new Headers();
+  for (const name of ["accept", "content-type"]) {
+    const value = request.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  headers.set("Authorization", `Bearer ${token}`);
+
+  try {
+    const body = request.method === "GET" || request.method === "HEAD"
+      ? undefined
+      : await request.clone().arrayBuffer();
+    if (body && body.byteLength > MAX_BODY_BYTES) {
+      return Response.json(
+        { detail: "The bridge request is too large." },
+        { status: 413, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    const upstream = new Request(
+      `http://survey-v82.internal${incoming.pathname}${incoming.search}`,
+      {
+        method: request.method,
+        headers,
+        body,
+        redirect: "manual",
+        signal: AbortSignal.timeout(LOCAL_API_TIMEOUT_MS),
+      },
+    );
+    const response = await binding.fetch(upstream);
+    if (response.status >= 500) return null;
+    const responseHeaders = new Headers(response.headers);
+    responseHeaders.set("Cache-Control", "no-store");
+    responseHeaders.set("X-Survey-Bridge", "cloudflare-vpc-8512");
+    responseHeaders.set("X-Survey-Primary", "local-v8.2-2b");
+    responseHeaders.set("X-Survey-Fallback", "deepseek-v4-flash");
+    responseHeaders.set("X-Survey-Model-Path", "local-v8.2-2b");
+    return new Response(response.body, {
+      status: response.status,
+      headers: responseHeaders,
+    });
+  } catch {
+    return null;
+  }
+}
+
 // Image security config. SVG sources with .svg extension auto-skip the
 // optimization endpoint on the client side (served directly, no proxy).
 // To route SVGs through the optimizer (with security headers), set
@@ -28,6 +101,11 @@ interface ExecutionContext {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname.startsWith("/api/v1/")) {
+      const localResponse = await tryLocalV82(request, env);
+      if (localResponse) return localResponse;
+    }
 
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];

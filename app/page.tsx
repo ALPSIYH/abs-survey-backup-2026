@@ -7,7 +7,7 @@ export default function Home() {
   return (
     <App
       initialCatalog={catalog as CloudCatalog}
-      initialDataBundle={bundle as StaticDataBundle}
+      initialDataBundle={bundle as unknown as StaticDataBundle}
     />
   );
 }
