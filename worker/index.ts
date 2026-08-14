@@ -99,6 +99,7 @@ async function tryLocalV82(request: Request, env: Env): Promise<Response | null>
     responseHeaders.set("X-Survey-Primary", "local-v8.2-2b");
     responseHeaders.set("X-Survey-Fallback", "deepseek-v4-flash");
     responseHeaders.set("X-Survey-Model-Path", "local-v8.2-2b");
+    responseHeaders.set("X-Survey-Channel", "cloudflare-vpc-8512");
     return new Response(response.body, {
       status: response.status,
       headers: responseHeaders,
