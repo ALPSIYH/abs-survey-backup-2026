@@ -78,7 +78,7 @@ export async function localAssistantStatus(): Promise<AssistantStatus> {
     ? {
         provider: status.provider,
         available: true,
-        label: "Cloud model and verified statistics",
+        label: "DeepSeek fallback for grounded search",
         detail: `${status.model} reranks grounded question candidates`,
       }
     : {

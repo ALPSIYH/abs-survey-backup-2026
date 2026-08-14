@@ -1785,10 +1785,10 @@ function App({
         <div className="assistant-heading">
           <div><Bot size={19} /><span><strong>{bi(locale, "Analysis assistant", "分析助理")}</strong><small>{bootstrap.assistant.available
             ? bootstrap.assistant.provider === "local"
-              ? bi(locale, "V8.2 model and verified statistics connected", "V8.2 模型與統計已連線")
+              ? bi(locale, "Local V8.2 primary connected · DeepSeek fallback ready", "本機 V8.2 主路徑已連線 · DeepSeek 備用已就緒")
               : bootstrap.assistant.provider === "deepseek"
-                ? bi(locale, "Cloud model and verified statistics connected", "雲端模型與統計已連線")
-                : bi(locale, "Cloud catalog and statistics connected", "雲端題庫與統計已連線")
+                ? bi(locale, "Local V8.2 primary · DeepSeek fallback ready", "本機 V8.2 為主 · DeepSeek 備用已就緒")
+                : bi(locale, "Verified data ready · local V8.2 reconnecting", "已驗證資料可用 · 正在重連本機 V8.2")
             : bi(locale, "Manual analysis remains available", "仍可使用手動分析")}</small></span></div>
           <div className="assistant-actions">
             <i className={bootstrap.assistant.available ? "online" : "offline"} />
