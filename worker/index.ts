@@ -24,6 +24,22 @@ interface ExecutionContext {
 const LOCAL_API_TIMEOUT_MS = 20_000;
 const MAX_BODY_BYTES = 128_000;
 
+async function serveIndependentStaticSite(
+  request: Request,
+  assets: Fetcher,
+): Promise<Response | null> {
+  const direct = await assets.fetch(request);
+  if (direct.status !== 404) return direct;
+
+  const acceptsHtml = request.headers.get("accept")?.includes("text/html") ?? true;
+  if (!acceptsHtml) return direct;
+  const indexUrl = new URL(request.url);
+  indexUrl.pathname = "/index.html";
+  indexUrl.search = "";
+  const index = await assets.fetch(new Request(indexUrl, request));
+  return index.status === 404 ? null : index;
+}
+
 function sameOrigin(request: Request): boolean {
   const origin = request.headers.get("origin");
   if (!origin) return true;
@@ -105,6 +121,15 @@ const worker = {
     if (url.pathname.startsWith("/api/v1/")) {
       const localResponse = await tryLocalV82(request, env);
       if (localResponse) return localResponse;
+    }
+
+    if (
+      (request.method === "GET" || request.method === "HEAD")
+      && !url.pathname.startsWith("/api/")
+      && url.pathname !== "/_vinext/image"
+    ) {
+      const staticResponse = await serveIndependentStaticSite(request, env.ASSETS);
+      if (staticResponse) return staticResponse;
     }
 
     if (url.pathname === "/_vinext/image") {

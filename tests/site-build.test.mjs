@@ -42,6 +42,12 @@ test("server-renders the finished survey explorer", async () => {
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|SkeletonPreview/);
 });
 
+test("packages the independent static first screen into Cloudflare assets", async () => {
+  const html = await readFile(new URL("../dist/client/index.html", import.meta.url), "utf8");
+  assert.match(html, /Asian Barometer Survey Explorer/u);
+  assert.match(html, /<script[^>]+src="\.\/assets\//u);
+});
+
 test("public deployment cannot invoke a model without a configured server secret", async () => {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("local-route-test", `${process.pid}-${Date.now()}`);
