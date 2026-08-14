@@ -118,10 +118,14 @@ test("does not expose respondent-level source files", async () => {
   const publicFiles = await readdir(new URL("../public/", import.meta.url));
   assert.equal(publicFiles.some((name) => /\.(sav|duckdb|parquet|csv)$/i.test(name)), false);
   await assert.rejects(access(new URL("../public/data/responses.json", import.meta.url)));
-  assert.deepEqual(
-    await readdir(new URL("../app/_sites-preview/", import.meta.url)),
-    [],
-  );
+  try {
+    assert.deepEqual(
+      await readdir(new URL("../app/_sites-preview/", import.meta.url)),
+      [],
+    );
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
   await access(new URL("../public/og.png", import.meta.url));
   await access(new URL("../dist/server/index.js", import.meta.url));
   await access(new URL("../dist/.openai/hosting.json", import.meta.url));
