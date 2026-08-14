@@ -41,8 +41,7 @@ import {
   YAxis,
   ZAxis,
 } from "recharts";
-import { catalogMatch } from "./api";
-import { api } from "./live-api";
+import { api, catalogMatch } from "./api";
 import { missingScopeCells } from "./coverage";
 import {
   DEFAULT_LOCALE,
