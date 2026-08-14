@@ -50,10 +50,25 @@ test("packages the independent static first screen into Cloudflare assets", asyn
 
 test("presents generic local and cloud runtime status", async () => {
   const source = await readFile(new URL("../app/App.tsx", import.meta.url), "utf8");
+  assert.match(source, /Checking connection…/u);
   assert.match(source, /Local model connected/u);
-  assert.match(source, /Cloud API \(local not connected; no direct data access\)/u);
-  assert.match(source, /云端 API（因本地未连接，不会直接接触数据）/u);
+  assert.match(source, /Cloud API \(local unavailable; no access to the local database or respondent-level records\)/u);
+  assert.match(source, /云端 API（本地未连接；无法访问本机数据库或受访者级记录）/u);
   assert.doesNotMatch(source, /Local V8\.2 primary connected · DeepSeek fallback ready/u);
+});
+
+test("keeps an interrupted local conversation intact instead of replacing it", async () => {
+  const hybrid = await readFile(new URL("../app/hybrid-api.ts", import.meta.url), "utf8");
+  assert.match(hybrid, /LocalConversationUnavailableError/u);
+  assert.match(hybrid, /liveConversationIds/u);
+  assert.doesNotMatch(hybrid, /fallbackConversationMessage/u);
+});
+
+test("only retryable local service failures can use a fallback", async () => {
+  const live = await readFile(new URL("../app/live-api.ts", import.meta.url), "utf8");
+  const hybrid = await readFile(new URL("../app/hybrid-api.ts", import.meta.url), "utf8");
+  assert.match(live, /new Set\(\[502, 503, 504\]\)/u);
+  assert.match(hybrid, /isRetryableLiveApiError/u);
 });
 
 test("public deployment cannot invoke a model without a configured server secret", async () => {
@@ -101,7 +116,7 @@ test("primary local bridge fails closed when no durable origin is configured", a
     { waitUntil() {}, passThroughOnException() {} },
   );
   assert.equal(response.status, 503);
-  assert.match((await response.json()).detail, /primary local V8\.2 service is not configured/i);
+  assert.match((await response.json()).detail, /local survey service is not configured/i);
 });
 
 test("packages the complete aggregate-only cloud dataset", async () => {

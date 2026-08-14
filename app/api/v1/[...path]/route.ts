@@ -47,7 +47,7 @@ async function proxy(request: NextRequest): Promise<NextResponse> {
   const origin = liveApiOrigin();
   if (!origin) {
     return NextResponse.json(
-      { detail: "The primary local V8.2 service is not configured; DeepSeek and deterministic analysis remain available as fallback." },
+      { detail: "The local survey service is not configured; cloud and deterministic analysis remain available." },
       { status: 503, headers: { "Cache-Control": "no-store" } },
     );
   }
@@ -93,21 +93,26 @@ async function proxy(request: NextRequest): Promise<NextResponse> {
         incoming.pathname === "/api/v1/health" ? HEALTH_TIMEOUT_MS : OPERATION_TIMEOUT_MS,
       ),
     });
-    return new NextResponse(response.body, {
-      status: response.status,
-      headers: {
-        "Cache-Control": "no-store",
-        "Content-Type": response.headers.get("content-type") ?? "application/json",
+    const responseHeaders: Record<string, string> = {
+      "Cache-Control": "no-store",
+      "Content-Type": response.headers.get("content-type") ?? "application/json",
+    };
+    if (response.ok) {
+      Object.assign(responseHeaders, {
         "X-Survey-Bridge": "v8.2-primary",
         "X-Survey-Primary": "local-v8.2-2b",
         "X-Survey-Fallback": "deepseek-v4-flash",
         "X-Survey-Model-Path": "local-v8.2-2b",
         "X-Survey-Channel": "sites-gateway-8511",
-      },
+      });
+    }
+    return new NextResponse(response.body, {
+      status: response.status,
+      headers: responseHeaders,
     });
   } catch {
     return NextResponse.json(
-      { detail: "The synchronized V8.2 survey service is temporarily unavailable." },
+      { detail: "The local survey service is temporarily unavailable." },
       { status: 503, headers: { "Cache-Control": "no-store" } },
     );
   }

@@ -36,7 +36,7 @@ import {
   type StaticDataBundle,
 } from "./api";
 import { missingScopeCells } from "./coverage";
-import { api } from "./hybrid-api";
+import { api, isLocalConversationUnavailableError } from "./hybrid-api";
 import {
   DEFAULT_LOCALE,
   cleanMarkdown,
@@ -219,6 +219,7 @@ interface JournalEntry {
 }
 
 type ResultTab = "chart" | "table";
+type AssistantConnection = "checking" | "local" | "cloud";
 type ChartMetric = "mean" | "median" | "quartiles" | "sd" | "base_n";
 type ChartLayout = "country" | "wave";
 type CatalogKind = "questions" | "response_sets";
@@ -618,6 +619,7 @@ function App({
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [assistantInput, setAssistantInput] = useState("");
+  const [assistantConnection, setAssistantConnection] = useState<AssistantConnection>("checking");
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantPhase, setAssistantPhase] = useState<AssistantPhase>("idle");
   const [showAssistantProgress, setShowAssistantProgress] = useState(false);
@@ -650,6 +652,18 @@ function App({
     analysisSequence.current += 1;
     setRunning(false);
     commitDraftState(next);
+  }
+
+  function assistantFailureMessage(reason: unknown, fallback: string): string {
+    if (!isLocalConversationUnavailableError(reason)) {
+      return reason instanceof Error ? reason.message : fallback;
+    }
+    setAssistantConnection("cloud");
+    return bi(
+      locale,
+      "The local connection was interrupted. Your current result is unchanged. Start a new conversation to use the cloud service.",
+      "本地连接已中断。当前结果保持不变；如需使用云端服务，请开始新对话。",
+    );
   }
 
   useEffect(() => {
@@ -703,8 +717,11 @@ function App({
     seedCatalog(initialCatalog);
     if (initialDataBundle) seedDataBundle(initialDataBundle);
     api.assistantStatus()
-      .then((assistant) => setBootstrap((current) => current ? { ...current, assistant } : current))
-      .catch(() => undefined);
+      .then((assistant) => {
+        setBootstrap((current) => current ? { ...current, assistant } : current);
+        setAssistantConnection(assistant.provider === "local" ? "local" : "cloud");
+      })
+      .catch(() => setAssistantConnection("cloud"));
     api.createConversation()
       .then(setConversation)
       .catch(() => undefined);
@@ -1241,7 +1258,7 @@ function App({
       await applyConversationResponse(response);
     } catch (reason) {
       lastFailedAction.current = () => submitAssistantPrompt(message);
-      setError(reason instanceof Error ? reason.message : "分析助理暫時無法回應");
+      setError(assistantFailureMessage(reason, "分析助理暫時無法回應"));
     } finally {
       setAssistantQueued(null);
       setAssistantBusy(false);
@@ -1269,7 +1286,7 @@ function App({
       setAssistantPhase("rendering");
       await applyConversationResponse(response);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "分析助理暫時無法回應");
+      setError(assistantFailureMessage(reason, "分析助理暫時無法回應"));
     } finally {
       setAssistantQueued(null);
       setAssistantBusy(false);
@@ -1433,7 +1450,10 @@ function App({
       setConversation(response);
       conversationSnapshotRef.current = null;
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : bi(locale, "Unable to start a new question.", "無法開始新問題"));
+      setError(assistantFailureMessage(
+        reason,
+        bi(locale, "Unable to start a new question.", "無法開始新問題"),
+      ));
     }
   }
 
@@ -1445,6 +1465,12 @@ function App({
       conversationSnapshotRef.current = null;
       setResult(null);
       setAssistantInput("");
+      api.assistantStatus()
+        .then((assistant) => {
+          setBootstrap((current) => current ? { ...current, assistant } : current);
+          setAssistantConnection(assistant.provider === "local" ? "local" : "cloud");
+        })
+        .catch(() => setAssistantConnection("cloud"));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : bi(locale, "Unable to start a new conversation.", "無法開始新對話"));
     }
@@ -1783,15 +1809,17 @@ function App({
 
       <aside className="assistant-panel" aria-busy={assistantBusy}>
         <div className="assistant-heading">
-          <div><Bot size={19} /><span><strong>{bi(locale, "Analysis assistant", "分析助理")}</strong><small>{bootstrap.assistant.provider === "local"
-            ? bi(locale, "Local model connected", "本地模型已连接")
-            : bi(
+          <div><Bot size={19} /><span><strong>{bi(locale, "Analysis assistant", "分析助理")}</strong><small>{assistantConnection === "checking"
+            ? bi(locale, "Checking connection…", "正在检查连接…")
+            : assistantConnection === "local"
+              ? bi(locale, "Local model connected", "本地模型已连接")
+              : bi(
                 locale,
-                "Cloud API (local not connected; no direct data access)",
-                "云端 API（因本地未连接，不会直接接触数据）",
+                "Cloud API (local unavailable; no access to the local database or respondent-level records)",
+                "云端 API（本地未连接；无法访问本机数据库或受访者级记录）",
               )}</small></span></div>
           <div className="assistant-actions">
-            <i className={bootstrap.assistant.available ? "online" : "offline"} />
+            <i className={assistantConnection} />
             {surface === "conversation" ? (
               <>
                 <button

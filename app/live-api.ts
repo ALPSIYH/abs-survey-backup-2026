@@ -11,16 +11,41 @@ import type {
   ResponseSetDetail,
 } from "./types";
 
+const RETRYABLE_STATUS_CODES = new Set([502, 503, 504]);
+
+export class LiveApiError extends Error {
+  readonly status: number | null;
+  readonly retryable: boolean;
+
+  constructor(message: string, status: number | null, retryable: boolean) {
+    super(message);
+    this.name = "LiveApiError";
+    this.status = status;
+    this.retryable = retryable;
+  }
+}
+
+export function isRetryableLiveApiError(reason: unknown): reason is LiveApiError {
+  return reason instanceof LiveApiError && reason.retryable;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    cache: "no-store",
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-  });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...init,
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    });
+  } catch {
+    throw new LiveApiError("The local survey service could not be reached.", null, true);
+  }
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(
-      typeof body?.detail === "string" ? body.detail : "The live survey service is unavailable.",
+    throw new LiveApiError(
+      typeof body?.detail === "string" ? body.detail : "The local survey service is unavailable.",
+      response.status,
+      RETRYABLE_STATUS_CODES.has(response.status),
     );
   }
   return response.json() as Promise<T>;

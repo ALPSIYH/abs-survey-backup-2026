@@ -435,7 +435,8 @@ tbody tr:hover { background: #FAF8F2; }
 .assistant-heading strong { font-size: 13px; }
 .assistant-heading small { margin-top: 2px; color: var(--muted); font-size: 9.5px; }
 .assistant-heading i { width: 7px; height: 7px; border-radius: 50%; background: #B9B2A4; }
-.assistant-heading i.online { background: #4E8D7C; box-shadow: 0 0 0 3px rgba(33,163,141,.13); }
+.assistant-heading i.local { background: #4E8D7C; box-shadow: 0 0 0 3px rgba(33,163,141,.13); }
+.assistant-heading i.cloud { background: #B97820; box-shadow: 0 0 0 3px rgba(185,120,32,.14); }
 .assistant-actions { display: flex; align-items: center; gap: 3px; }
 .assistant-actions i { margin-right: 5px; }
 .assistant-actions button { width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 3px; background: transparent; color: #6B675C; cursor: pointer; }

@@ -1,5 +1,5 @@
 import { api as staticApi } from "./api";
-import { api as liveApi } from "./live-api";
+import { api as liveApi, isRetryableLiveApiError } from "./live-api";
 
 type Backend = typeof staticApi;
 
@@ -19,6 +19,20 @@ const HEALTH_TIMEOUT_MS = 2_500;
 const BRIDGE_RECHECK_MS = 10_000;
 let bridgeAvailabilityPromise: Promise<boolean> | null = null;
 let bridgeAvailability = { value: false, expiresAt: 0 };
+const liveConversationIds = new Set<string>();
+
+export class LocalConversationUnavailableError extends Error {
+  constructor() {
+    super("The local connection was interrupted. The current result has not been changed.");
+    this.name = "LocalConversationUnavailableError";
+  }
+}
+
+export function isLocalConversationUnavailableError(
+  reason: unknown,
+): reason is LocalConversationUnavailableError {
+  return reason instanceof LocalConversationUnavailableError;
+}
 
 async function bridgeHealth(): Promise<BridgeHealth | null> {
   const controller = new AbortController();
@@ -93,31 +107,40 @@ async function preferLocalV82<T>(
   if (await bridgeAvailable()) {
     try {
       return await primary();
-    } catch {
+    } catch (reason) {
+      if (!isRetryableLiveApiError(reason)) throw reason;
       invalidateBridge();
     }
   }
   return fallback();
 }
 
-async function fallbackConversationMessage(
+async function createConversation() {
+  if (await bridgeAvailable()) {
+    try {
+      const response = await liveApi.createConversation();
+      liveConversationIds.add(response.conversation_id);
+      return response;
+    } catch (reason) {
+      if (!isRetryableLiveApiError(reason)) throw reason;
+      invalidateBridge();
+    }
+  }
+  return staticApi.createConversation();
+}
+
+async function continueConversation<T>(
   conversationId: string,
-  message: string,
-  expectedRevision: number,
-) {
+  liveRequest: () => Promise<T>,
+  staticRequest: () => Promise<T>,
+): Promise<T> {
+  if (!liveConversationIds.has(conversationId)) return staticRequest();
   try {
-    return await staticApi.sendConversationMessage(
-      conversationId,
-      message,
-      expectedRevision,
-    );
-  } catch {
-    const replacement = await staticApi.createConversation();
-    return staticApi.sendConversationMessage(
-      replacement.conversation_id,
-      message,
-      replacement.revision,
-    );
+    return await liveRequest();
+  } catch (reason) {
+    if (!isRetryableLiveApiError(reason)) throw reason;
+    invalidateBridge();
+    throw new LocalConversationUnavailableError();
   }
 }
 
@@ -142,19 +165,19 @@ export const api: Backend = {
     () => liveApi.assistantPlan(...args),
     () => staticApi.assistantPlan(...args),
   ),
-  createConversation: () => preferLocalV82(
-    liveApi.createConversation,
-    staticApi.createConversation,
-  ),
-  sendConversationMessage: (...args) => preferLocalV82(
+  createConversation,
+  sendConversationMessage: (...args) => continueConversation(
+    args[0],
     () => liveApi.sendConversationMessage(...args),
-    () => fallbackConversationMessage(...args),
+    () => staticApi.sendConversationMessage(...args),
   ),
-  sendConversationCommand: (...args) => preferLocalV82(
+  sendConversationCommand: (...args) => continueConversation(
+    args[0],
     () => liveApi.sendConversationCommand(...args),
     () => staticApi.sendConversationCommand(...args),
   ),
-  startNewQuestion: (...args) => preferLocalV82(
+  startNewQuestion: (...args) => continueConversation(
+    args[0],
     () => liveApi.startNewQuestion(...args),
     () => staticApi.startNewQuestion(...args),
   ),
