@@ -64,7 +64,11 @@ test("presents generic local and cloud runtime status", async () => {
 });
 
 test("keeps an interrupted local conversation intact instead of replacing it", async () => {
+  const app = await readFile(new URL("../app/App.tsx", import.meta.url), "utf8");
   const hybrid = await readFile(new URL("../app/hybrid-api.ts", import.meta.url), "utf8");
+  assert.match(app, /local_interruption/u);
+  assert.match(app, /Your current result is unchanged/u);
+  assert.match(app, /Start a new conversation to use the cloud service/u);
   assert.match(hybrid, /LocalConversationUnavailableError/u);
   assert.match(hybrid, /liveConversationIds/u);
   assert.doesNotMatch(hybrid, /fallbackConversationMessage/u);

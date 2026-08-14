@@ -2091,10 +2091,13 @@ function ConversationWorkspaceEmpty({ locale }: { locale: Locale }) {
   return <div className="workspace-empty conversation-empty"><div className="empty-mark"><MessageSquareText size={26} /></div><span className="section-kicker">{bi(locale, "Conversation", "對話")}</span><h1>{bi(locale, "Your result will appear here", "結果會在這裡展開")}</h1><p>{bi(locale, "Ask for an analysis on the right. When a question or scope is ambiguous, the assistant will show clear choices.", "在右側提出分析問題；若題意或範圍不明確，助理會先列出可選項。")}</p></div>;
 }
 
-type ErrorKind = "missing_cells" | "offline" | "network" | "generic";
+type ErrorKind = "missing_cells" | "local_interruption" | "offline" | "network" | "generic";
 
 export function classifyError(message: string): ErrorKind {
   if (message.includes("情境不可用") || message.includes("沒有資料")) return "missing_cells";
+  if (message.includes("local connection was interrupted") || message.includes("本地连接已中断")) {
+    return "local_interruption";
+  }
   if (message.includes("尚未連線") || message.includes("not connected")) return "offline";
   if (message.includes("Failed to fetch") || message.includes("NetworkError")) return "network";
   return "generic";
@@ -2112,6 +2115,11 @@ function RecoverableError({ message, locale, onRetry, onDismiss }: {
       event: bi(locale, "Some selected cells have no data", "資料範圍含有沒有資料的組合"),
       impact: bi(locale, "Unavailable cells will be excluded", "這些組合不會進入分析"),
       action: bi(locale, "Adjust the scope to change the result", "可移除缺失組合或調整範圍"),
+    },
+    local_interruption: {
+      event: bi(locale, "The local connection was interrupted", "本地连接已中断"),
+      impact: bi(locale, "Your current result is unchanged", "当前结果保持不变"),
+      action: bi(locale, "Start a new conversation to use the cloud service", "如需使用云端服务，请开始新对话"),
     },
     offline: {
       event: bi(locale, "The analysis assistant is temporarily unavailable", "分析助理暫時不可用"),
