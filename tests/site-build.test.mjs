@@ -129,6 +129,48 @@ test("primary local bridge fails closed when no durable origin is configured", a
   assert.match((await response.json()).detail, /local survey service is not configured/i);
 });
 
+async function requestThroughLocalBinding(status) {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("local-status-test", `${process.pid}-${Date.now()}-${status}`);
+  const { default: worker } = await import(workerUrl.href);
+  return worker.fetch(
+    new Request("https://survey.example/api/v1/assistant/status", {
+      headers: {
+        accept: "application/json",
+        host: "survey.example",
+        "x-forwarded-host": "survey.example",
+        "x-forwarded-proto": "https",
+      },
+    }),
+    {
+      ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+      SURVEY_LIVE_API_TOKEN: "test-token",
+      SURVEY_V82_API: {
+        fetch: async () => Response.json({ detail: `upstream-${status}` }, { status }),
+      },
+    },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+}
+
+test("independent worker preserves non-retryable local errors without model headers", async () => {
+  for (const status of [400, 403, 409, 413, 429, 500]) {
+    const response = await requestThroughLocalBinding(status);
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("x-survey-model-path"), null);
+    assert.equal((await response.json()).detail, `upstream-${status}`);
+  }
+});
+
+test("independent worker falls back only for gateway availability errors", async () => {
+  for (const status of [502, 503, 504]) {
+    const response = await requestThroughLocalBinding(status);
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("x-survey-model-path"), null);
+    assert.match((await response.json()).detail, /local survey service is not configured/i);
+  }
+});
+
 test("packages the complete aggregate-only cloud dataset", async () => {
   const [catalogText, manifestText, questionFiles, responseSetFiles] = await Promise.all([
     readFile(new URL("../public/data/catalog.json", import.meta.url), "utf8"),

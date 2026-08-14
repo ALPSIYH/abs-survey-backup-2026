@@ -23,6 +23,7 @@ interface ExecutionContext {
 
 const LOCAL_API_TIMEOUT_MS = 20_000;
 const MAX_BODY_BYTES = 128_000;
+const RETRYABLE_LOCAL_STATUS_CODES = new Set([502, 503, 504]);
 
 async function serveIndependentStaticSite(
   request: Request,
@@ -92,14 +93,16 @@ async function tryLocalV82(request: Request, env: Env): Promise<Response | null>
       },
     );
     const response = await binding.fetch(upstream);
-    if (response.status >= 500) return null;
+    if (RETRYABLE_LOCAL_STATUS_CODES.has(response.status)) return null;
     const responseHeaders = new Headers(response.headers);
     responseHeaders.set("Cache-Control", "no-store");
-    responseHeaders.set("X-Survey-Bridge", "cloudflare-vpc-8512");
-    responseHeaders.set("X-Survey-Primary", "local-v8.2-2b");
-    responseHeaders.set("X-Survey-Fallback", "deepseek-v4-flash");
-    responseHeaders.set("X-Survey-Model-Path", "local-v8.2-2b");
-    responseHeaders.set("X-Survey-Channel", "cloudflare-vpc-8512");
+    if (response.ok) {
+      responseHeaders.set("X-Survey-Bridge", "cloudflare-vpc-8512");
+      responseHeaders.set("X-Survey-Primary", "local-v8.2-2b");
+      responseHeaders.set("X-Survey-Fallback", "deepseek-v4-flash");
+      responseHeaders.set("X-Survey-Model-Path", "local-v8.2-2b");
+      responseHeaders.set("X-Survey-Channel", "cloudflare-vpc-8512");
+    }
     return new Response(response.body, {
       status: response.status,
       headers: responseHeaders,
