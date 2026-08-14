@@ -128,7 +128,7 @@ test("packages the complete aggregate-only cloud dataset", async () => {
   assert.equal(manifest.aggregateCells, 85_805);
   assert.equal(manifest.schemaVersion, "sites-static-data-manifest.v2");
   assert.deepEqual(manifest.release, catalog.dataset.release);
-  assert.equal(Object.keys(manifest.files).length, 202);
+  assert.equal(Object.keys(manifest.files).length, 203);
 
   const observedFiles = {};
   for (const relativePath of Object.keys(manifest.files).sort()) {
@@ -160,6 +160,13 @@ test("packages the complete aggregate-only cloud dataset", async () => {
       [9, 6, 2, 1_429],
     ],
   );
+
+  const bundle = JSON.parse(
+    await readFile(new URL("../public/data/bundle.json", import.meta.url), "utf8"),
+  );
+  assert.equal(Object.keys(bundle.questions).length, 199);
+  assert.equal(Object.keys(bundle.responseSets).length, 2);
+  assert.deepEqual(bundle.questions.q36, q36);
 
   const membership = JSON.parse(
     await readFile(
@@ -194,6 +201,7 @@ test("does not expose respondent-level source files", async () => {
   assert.match(staticHtml, /\.\/assets\/index-/);
   assert.match(staticHtml, /name="survey-runtime" content="static-independent"/);
   await access(new URL("../dist-static/data/catalog.json", import.meta.url));
+  await access(new URL("../dist-static/data/bundle.json", import.meta.url));
   await access(new URL("../dist-static/data/questions/q36.json", import.meta.url));
   await access(root);
 });

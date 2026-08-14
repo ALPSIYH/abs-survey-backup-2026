@@ -59,6 +59,7 @@ def verify(project_root: Path, data_dir: Path) -> dict[str, Any]:
     if len(response_set_files) != int(manifest.get("responseSetFiles", -1)):
         raise RuntimeError("response-set file count is invalid")
     if set(actual_files) != {
+        "bundle.json",
         "catalog.json",
         *question_files,
         *response_set_files,

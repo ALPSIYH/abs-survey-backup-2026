@@ -37,7 +37,7 @@ interface StaticResponseSetCatalog {
   topicId: string;
 }
 
-interface StaticResponseSetData {
+export interface StaticResponseSetData {
   id: string;
   label: string;
   topicId: string;
@@ -58,6 +58,11 @@ interface StaticResponseSetData {
 
 export interface CloudCatalog extends StaticCatalog {
   responseSets: StaticResponseSetCatalog[];
+}
+
+export interface StaticDataBundle {
+  questions: Record<string, QuestionData>;
+  responseSets: Record<string, StaticResponseSetData>;
 }
 
 type Statistic = StatisticalView["statistic"];
@@ -282,6 +287,15 @@ export function seedCatalog(catalog: CloudCatalog): Bootstrap {
   catalogReleaseFingerprint = fingerprint;
   catalogPromise = Promise.resolve(catalog);
   return bootstrapFromCatalog(catalog);
+}
+
+export function seedDataBundle(bundle: StaticDataBundle): void {
+  for (const [id, data] of Object.entries(bundle.questions)) {
+    QUESTION_CACHE.set(id, Promise.resolve(data));
+  }
+  for (const [id, data] of Object.entries(bundle.responseSets)) {
+    RESPONSE_SET_CACHE.set(id, Promise.resolve(data));
+  }
 }
 
 function loadCatalog(): Promise<CloudCatalog> {

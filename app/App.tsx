@@ -28,7 +28,13 @@ import {
   Table2,
   X,
 } from "lucide-react";
-import { catalogMatch, seedCatalog, type CloudCatalog } from "./api";
+import {
+  catalogMatch,
+  seedCatalog,
+  seedDataBundle,
+  type CloudCatalog,
+  type StaticDataBundle,
+} from "./api";
 import { missingScopeCells } from "./coverage";
 import { api } from "./hybrid-api";
 import {
@@ -573,8 +579,18 @@ export function analysisContract(
   );
 }
 
-function App({ initialCatalog }: { initialCatalog: CloudCatalog }) {
-  const initialBootstrap = useMemo(() => seedCatalog(initialCatalog), [initialCatalog]);
+function App({
+  initialCatalog,
+  initialDataBundle,
+}: {
+  initialCatalog: CloudCatalog;
+  initialDataBundle?: StaticDataBundle;
+}) {
+  const initialBootstrap = useMemo(() => {
+    const seeded = seedCatalog(initialCatalog);
+    if (initialDataBundle) seedDataBundle(initialDataBundle);
+    return seeded;
+  }, [initialCatalog, initialDataBundle]);
   const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
   const [fontSize, setFontSize] = useState<FontSize>("standard");
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(initialBootstrap);
@@ -685,13 +701,14 @@ function App({ initialCatalog }: { initialCatalog: CloudCatalog }) {
 
   useEffect(() => {
     seedCatalog(initialCatalog);
+    if (initialDataBundle) seedDataBundle(initialDataBundle);
     api.assistantStatus()
       .then((assistant) => setBootstrap((current) => current ? { ...current, assistant } : current))
       .catch(() => undefined);
     api.createConversation()
       .then(setConversation)
       .catch(() => undefined);
-  }, [initialCatalog]);
+  }, [initialCatalog, initialDataBundle]);
 
   useEffect(() => {
     const search = query.trim();

@@ -286,18 +286,22 @@ def export(database: Path, output: Path, release: dict[str, Any]) -> None:
     )
 
     question_dir = output / "questions"
+    question_bundle: dict[str, object] = {}
     for question in questions:
         variable_id = str(question["id"])
+        payload = {
+            "id": variable_id,
+            "scale": scales[variable_id],
+            "cells": cells[variable_id],
+        }
+        question_bundle[variable_id] = payload
         write_json(
             question_dir / f"{variable_id}.json",
-            {
-                "id": variable_id,
-                "scale": scales[variable_id],
-                "cells": cells[variable_id],
-            },
+            payload,
         )
 
     response_set_dir = output / "response-sets"
+    response_set_bundle: dict[str, object] = {}
     for response_set in response_sets:
         response_set_id = str(response_set["id"])
         members = sorted(
@@ -375,17 +379,24 @@ def export(database: Path, output: Path, release: dict[str, Any]) -> None:
                     for (country_code, wave, raw_value), count in sorted(counts.items())
                 ],
             }
-        write_json(
-            response_set_dir / f"{response_set_id}.json",
-            {
-                "id": response_set_id,
-                "label": response_set["label"],
-                "topicId": response_set["topicId"],
-                "members": members,
-                "options": options,
-                "scopes": scopes,
-            },
-        )
+        payload = {
+            "id": response_set_id,
+            "label": response_set["label"],
+            "topicId": response_set["topicId"],
+            "members": members,
+            "options": options,
+            "scopes": scopes,
+        }
+        response_set_bundle[response_set_id] = payload
+        write_json(response_set_dir / f"{response_set_id}.json", payload)
+
+    write_json(
+        output / "bundle.json",
+        {
+            "questions": question_bundle,
+            "responseSets": response_set_bundle,
+        },
+    )
 
     connection.close()
     file_hashes = {
