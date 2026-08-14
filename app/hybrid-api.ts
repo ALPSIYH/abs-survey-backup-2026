@@ -129,31 +129,22 @@ async function fallbackConversationMessage(
 }
 
 export const api: Backend = {
-  bootstrap: () => preferLocalV82(liveApi.bootstrap, staticApi.bootstrap),
+  // Immutable aggregate data ships with the verified ACTIVE release, so data
+  // views render immediately and remain available when the Mac is offline.
+  // Model-backed operations below still prefer the dedicated local V8.2 API.
+  bootstrap: staticApi.bootstrap,
   catalogSearch: (...args) => preferLocalV82(
     () => liveApi.catalogSearch(...args),
     () => staticApi.catalogSearch(...args),
   ),
-  question: (...args) => preferLocalV82(
-    () => liveApi.question(...args),
-    () => staticApi.question(...args),
-  ),
-  responseSet: (...args) => preferLocalV82(
-    () => liveApi.responseSet(...args),
-    () => staticApi.responseSet(...args),
-  ),
+  question: staticApi.question,
+  responseSet: staticApi.responseSet,
   assistantStatus: () => preferLocalV82(
     liveApi.assistantStatus,
     staticApi.assistantStatus,
   ),
-  analyze: (...args) => preferLocalV82(
-    () => liveApi.analyze(...args),
-    () => staticApi.analyze(...args),
-  ),
-  validate: (...args) => preferLocalV82(
-    () => liveApi.validate(...args),
-    () => staticApi.validate(...args),
-  ),
+  analyze: staticApi.analyze,
+  validate: staticApi.validate,
   assistantPlan: (...args) => preferLocalV82(
     () => liveApi.assistantPlan(...args),
     () => staticApi.assistantPlan(...args),
