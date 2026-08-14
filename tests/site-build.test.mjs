@@ -212,6 +212,9 @@ test("does not expose respondent-level source files", async () => {
   const staticHtml = await readFile(new URL("../dist-static/index.html", import.meta.url), "utf8");
   assert.match(staticHtml, /\.\/assets\/index-/);
   assert.match(staticHtml, /name="survey-runtime" content="static-independent"/);
+  const hybridSource = await readFile(new URL("../app/hybrid-api.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(hybridSource, /document\.querySelector/u);
+  assert.match(hybridSource, /window\.fetch\("\/api\/v1\/health"/u);
   await access(new URL("../dist-static/data/catalog.json", import.meta.url));
   await access(new URL("../dist-static/data/bundle.json", import.meta.url));
   await access(new URL("../dist-static/data/questions/q36.json", import.meta.url));

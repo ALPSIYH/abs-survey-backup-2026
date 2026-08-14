@@ -20,13 +20,6 @@ const BRIDGE_RECHECK_MS = 10_000;
 let bridgeAvailabilityPromise: Promise<boolean> | null = null;
 let bridgeAvailability = { value: false, expiresAt: 0 };
 
-function isIndependentStaticBuild(): boolean {
-  if (typeof document === "undefined") return true;
-  return document.querySelector<HTMLMetaElement>(
-    'meta[name="survey-runtime"][content="static-independent"]',
-  ) !== null;
-}
-
 async function bridgeHealth(): Promise<BridgeHealth | null> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
@@ -66,7 +59,7 @@ export function bridgeMatchesEmbeddedRelease(
 }
 
 async function probeBridge(): Promise<boolean> {
-  if (isIndependentStaticBuild() || typeof window === "undefined") return false;
+  if (typeof window === "undefined") return false;
   const [health, embedded] = await Promise.all([
     bridgeHealth(),
     staticApi.bootstrap(),
@@ -75,7 +68,7 @@ async function probeBridge(): Promise<boolean> {
 }
 
 async function bridgeAvailable(): Promise<boolean> {
-  if (isIndependentStaticBuild() || typeof window === "undefined") return false;
+  if (typeof window === "undefined") return false;
   if (Date.now() < bridgeAvailability.expiresAt) return bridgeAvailability.value;
   if (!bridgeAvailabilityPromise) {
     bridgeAvailabilityPromise = probeBridge()
