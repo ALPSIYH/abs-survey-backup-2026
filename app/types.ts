@@ -67,7 +67,7 @@ export interface ResponseSetDetail extends ResponseSet {
 }
 
 export interface AssistantStatus {
-  provider: "offline" | "local" | "direct_ollama" | "deepseek" | "bridge";
+  provider: "offline" | "local" | "deepseek" | "bridge";
   available: boolean;
   label: string;
   detail: string;
@@ -80,6 +80,9 @@ export interface Bootstrap {
     engine_version: string;
     source_rows: number;
     question_count: number;
+    release_transaction: string | null;
+    release_correction: string | null;
+    release_fingerprint: string | null;
   };
   countries: Country[];
   waves: number[];

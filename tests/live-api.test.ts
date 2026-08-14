@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { api } from "../app/live-api";
+import { bridgeMatchesEmbeddedRelease } from "../app/hybrid-api";
 
 
 test("live client uses the shared versioned API instead of packaged calculations", async () => {
@@ -34,4 +35,41 @@ test("live client uses the shared versioned API instead of packaged calculations
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("V8.2 bridge is accepted only for the exact embedded ACTIVE data release", () => {
+  const embedded = {
+    dataset_id: "abs-w1-w6-cloud-aggregate",
+    builder_version: "merged-only-5",
+    engine_version: "sites-aggregate-v2",
+    source_rows: 118_961,
+    question_count: 199,
+    release_transaction: "mdv4-20260728T124437Z-cd56b81e1294",
+    release_correction: "merged-data-v4-resolved.4.0.0",
+    release_fingerprint: "c9578ce15fe901aa4ff7ed927cdf1d4cf76cacf10ac858b5f646a933c0fa1ef1",
+  };
+  const exact = {
+    status: "ready",
+    release: {
+      data_release: "merged-data-v4-resolved.4.0.0",
+      data_transaction: "mdv4-20260728T124437Z-cd56b81e1294",
+      data_fingerprint: "c9578ce15fe9",
+      model_release: "v8.2-iter-250",
+    },
+  };
+  assert.equal(bridgeMatchesEmbeddedRelease(exact, embedded), true);
+  assert.equal(
+    bridgeMatchesEmbeddedRelease({
+      ...exact,
+      release: { ...exact.release, data_transaction: "stale-release" },
+    }, embedded),
+    false,
+  );
+  assert.equal(
+    bridgeMatchesEmbeddedRelease({
+      ...exact,
+      release: { ...exact.release, model_release: "v7.2-iter-11000" },
+    }, embedded),
+    false,
+  );
 });

@@ -3,7 +3,9 @@
 import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  lazy,
   memo,
+  Suspense,
   useEffect,
   useMemo,
   useRef,
@@ -26,23 +28,9 @@ import {
   Table2,
   X,
 } from "lucide-react";
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Scatter,
-  ScatterChart,
-  Tooltip,
-  XAxis,
-  YAxis,
-  ZAxis,
-} from "recharts";
-import { api, catalogMatch } from "./api";
+import { catalogMatch, seedCatalog, type CloudCatalog } from "./api";
 import { missingScopeCells } from "./coverage";
+import { api } from "./hybrid-api";
 import {
   DEFAULT_LOCALE,
   cleanMarkdown,
@@ -192,12 +180,6 @@ const METRIC_LABELS: Record<Locale, Record<string, string>> = {
   },
 };
 
-const CHART_COLORS = [
-  "#1F6F9C", "#3C4858", "#4E8D7C", "#8C6D5E", "#7A9EAE", "#6E5F7E",
-  "#B05A4F", "#547A3A", "#9A6A16", "#75558A", "#2E7C83", "#A84D72",
-  "#4C6494", "#7E7440", "#536E67", "#8E5C45", "#4E789A", "#68724D",
-];
-
 /** Conversation-view statistic ids → analysis-record citation vocabulary. */
 const STATISTIC_LABELS: Record<Locale, Record<string, string>> = {
   en: {
@@ -245,6 +227,8 @@ type PrimaryAnalysisOption = {
   label: string;
   description: string;
 };
+
+const ResultChart = lazy(() => import("./ResultCharts"));
 
 type FontSize = "small" | "standard" | "large";
 
@@ -589,10 +573,11 @@ export function analysisContract(
   );
 }
 
-function App() {
+function App({ initialCatalog }: { initialCatalog: CloudCatalog }) {
+  const initialBootstrap = useMemo(() => seedCatalog(initialCatalog), [initialCatalog]);
   const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE);
   const [fontSize, setFontSize] = useState<FontSize>("standard");
-  const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
+  const [bootstrap, setBootstrap] = useState<Bootstrap | null>(initialBootstrap);
   const [draft, commitDraftState] = useState<Draft>(EMPTY_DRAFT);
   const [detail, setDetail] = useState<QuestionDetail | null>(null);
   const [responseSetDetail, setResponseSetDetail] = useState<ResponseSetDetail | null>(null);
@@ -614,7 +599,6 @@ function App() {
   const [showScale, setShowScale] = useState(false);
   const [showMissingContexts, setShowMissingContexts] = useState(false);
   const [surface, setSurface] = useState<WorkspaceSurface>("workbench");
-  const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [assistantInput, setAssistantInput] = useState("");
@@ -700,19 +684,14 @@ function App() {
   }, [assistantBusy]);
 
   useEffect(() => {
-    api.bootstrap()
-      .then((data) => {
-        setBootstrap(data);
-        api.assistantStatus()
-          .then((assistant) => setBootstrap((current) => current ? { ...current, assistant } : current))
-          .catch(() => undefined);
-      })
-      .catch((reason: Error) => setError(reason.message))
-      .finally(() => setLoading(false));
+    seedCatalog(initialCatalog);
+    api.assistantStatus()
+      .then((assistant) => setBootstrap((current) => current ? { ...current, assistant } : current))
+      .catch(() => undefined);
     api.createConversation()
       .then(setConversation)
       .catch(() => undefined);
-  }, []);
+  }, [initialCatalog]);
 
   useEffect(() => {
     const search = query.trim();
@@ -1512,9 +1491,6 @@ function App() {
     !== [...initialSuggestionValues].sort().join("\u0000")
   );
 
-  if (loading) {
-    return <div className="app-loading"><LoaderCircle className="spin" />{bi(locale, "Loading questions and analysis settings…", "正在載入題庫與分析設定…")}</div>;
-  }
   if (!bootstrap) {
     return <div className="app-loading error-state">{bi(locale, "Unable to load the workspace.", "無法載入工作區。")}</div>;
   }
@@ -1525,7 +1501,7 @@ function App() {
       data-font-size={fontSize}
     >
       <header className="topbar">
-        <div className="brand-lockup"><span className="brand-mark"><BarChart3 size={19} /></span><div><strong>{bi(locale, "Asian Barometer Survey Explorer", "亞洲民主動態調查分析")}</strong><small>{bi(locale, "Conversation and workspace share the same verified result", "對話查詢與完整分析共用同一份結果")}</small></div></div>
+        <div className="brand-lockup"><span className="brand-mark"><BarChart3 size={19} /></span><div><strong>{bi(locale, "Asian Barometer Survey Explorer", "亞洲民主動態調查分析")}</strong><small>{bi(locale, "Conversation and workspace share the same verified ACTIVE release", "對話查詢與完整分析共用同一份已驗證 ACTIVE 發布")}</small></div></div>
         <nav className="surface-switch" aria-label={bi(locale, "Workspace mode", "工作模式")}>
           <button className={surface === "conversation" ? "active" : ""} onClick={() => chooseSurface("conversation")}>{bi(locale, "Conversation", "對話分析")}</button>
           <button className={surface === "workbench" ? "active" : ""} onClick={() => chooseSurface("workbench")}>{bi(locale, "Workspace", "分析工作台")}</button>
@@ -1793,8 +1769,6 @@ function App() {
           <div><Bot size={19} /><span><strong>{bi(locale, "Analysis assistant", "分析助理")}</strong><small>{bootstrap.assistant.available
             ? bootstrap.assistant.provider === "local"
               ? bi(locale, "V8.2 model and verified statistics connected", "V8.2 模型與統計已連線")
-              : bootstrap.assistant.provider === "direct_ollama"
-                ? bi(locale, "Local model and verified statistics connected", "本機模型與統計已連線")
               : bootstrap.assistant.provider === "deepseek"
                 ? bi(locale, "Cloud model and verified statistics connected", "雲端模型與統計已連線")
                 : bi(locale, "Cloud catalog and statistics connected", "雲端題庫與統計已連線")
@@ -2340,7 +2314,11 @@ const ResultWorkspace = memo(function ResultWorkspace({
         </div>
       )}
       <div className={`result-body result-body-${tab}`}>
-        {tab === "chart" && <ResultChart envelope={envelope} details={details} metric={chartMetric} layout={chartLayout} locale={locale} />}
+        {tab === "chart" && (
+          <Suspense fallback={<div className="chart-empty">{bi(locale, "Preparing chart…", "正在准备图表…")}</div>}>
+            <ResultChart envelope={envelope} details={details} metric={chartMetric} layout={chartLayout} locale={locale} />
+          </Suspense>
+        )}
         {tab === "table" && <ResultTable envelope={envelope} details={details} locale={locale} />}
       </div>
     </section>
@@ -2353,6 +2331,7 @@ function ResultEvidence({ envelope, locale }: { envelope: AnalysisEnvelope; loca
   return <div className="evidence-strip"><div><span>{bi(locale, "Records in scope", "範圍內記錄")}</span><strong>{formatNumber(metadata.total_records_n, 0, locale)}</strong></div><div><span>{bi(locale, "Included", "納入分析")}</span><strong>{formatNumber(metadata.analysis_unweighted_n, 0, locale)}</strong></div><div><span>{bi(locale, "Excluded", "未納入")}</span><strong>{formatNumber(excluded, 0, locale)}</strong></div><div><span>{bi(locale, "Denominator", "計算分母")}</span><strong>{denominatorLabel(metadata.denominator_definition, locale)}</strong></div></div>;
 }
 
+/* Chart rendering is lazy-loaded from ResultCharts.tsx to keep the first screen small.
 function scoreDomain(detail: QuestionDetail | null, mode: Mode | null): [number, number] | undefined {
   if (!detail || !mode || mode === "category") return undefined;
   const values = detail.scale.flatMap((item) => {
@@ -2585,6 +2564,7 @@ function CrosstabMatrix({ envelope, details, locale }: { envelope: AnalysisEnvel
 function StatisticGrid({ rows, locale }: { rows: ResultRow[]; locale: Locale }) {
   return <div className="stat-grid">{rows.map((row, index) => <div key={`${row.metric}-${index}`}><span>{METRIC_LABELS[locale][String(row.metric)] ?? bi(locale, "Statistic", "統計量")}</span><strong>{formatNumber(row.estimate, row.metric === "base_n" ? 0 : 2, locale)}</strong><small>{row.label ?? dimensionLabel(row, locale)}{row.metric !== "base_n" && row.base_n != null ? ` · n=${formatNumber(row.base_n, 0, locale)}` : ""}</small></div>)}</div>;
 }
+*/
 
 function flattenRow(row: ResultRow, locale: Locale): Record<string, unknown> {
   const flat: Record<string, unknown> = { context: dimensionLabel(row, locale) };

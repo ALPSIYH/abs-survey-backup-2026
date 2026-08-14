@@ -1,7 +1,7 @@
 import type { AssistantStatus, Question } from "./types";
 
 interface LocalRerankResponse {
-  provider: "direct_ollama" | "deepseek";
+  provider: "deepseek";
   model: string;
   confidence: "high" | "medium" | "low";
   candidate_ids: string[];
@@ -15,8 +15,8 @@ const RERANK_CACHE_LIMIT = 128;
 const rerankCache = new Map<string, string[]>();
 interface RerankerStatus {
   available: boolean;
-  provider: "direct_ollama" | "deepseek";
-  model: "gemma4:26b-mlx" | "deepseek-v4-flash";
+  provider: "deepseek";
+  model: "deepseek-v4-flash";
 }
 
 let statusCache: { value: RerankerStatus | null; expiresAt: number } = {
@@ -57,8 +57,8 @@ async function detectReranker(): Promise<RerankerStatus | null> {
         const document = (await response.json()) as Partial<RerankerStatus>;
         if (
           document.available !== true
-          || !["direct_ollama", "deepseek"].includes(String(document.provider))
-          || !["gemma4:26b-mlx", "deepseek-v4-flash"].includes(String(document.model))
+          || document.provider !== "deepseek"
+          || document.model !== "deepseek-v4-flash"
         ) return null;
         return document as RerankerStatus;
       })
@@ -78,9 +78,7 @@ export async function localAssistantStatus(): Promise<AssistantStatus> {
     ? {
         provider: status.provider,
         available: true,
-        label: status.provider === "direct_ollama"
-          ? "Local model and verified statistics"
-          : "Cloud model and verified statistics",
+        label: "Cloud model and verified statistics",
         detail: `${status.model} reranks grounded question candidates`,
       }
     : {
@@ -172,10 +170,8 @@ export async function maybeRerankQuestions(
     if (!response.ok) return questions;
     const document = (await response.json()) as Partial<LocalRerankResponse>;
     if (
-      !(
-        (document.provider === "direct_ollama" && document.model === "gemma4:26b-mlx")
-        || (document.provider === "deepseek" && document.model === "deepseek-v4-flash")
-      )
+      document.provider !== "deepseek"
+      || document.model !== "deepseek-v4-flash"
       || document.confidence !== "high"
       || !Array.isArray(document.candidate_ids)
       || !document.candidate_ids.length

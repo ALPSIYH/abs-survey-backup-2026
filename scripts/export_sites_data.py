@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import json
 import math
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import duckdb
 
@@ -58,7 +61,43 @@ def write_json(path: Path, payload: object) -> None:
     )
 
 
-def export(database: Path, output: Path) -> None:
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def authenticated_active_source(project_root: Path) -> tuple[Path, dict[str, Any]]:
+    root = project_root.resolve(strict=True)
+    validator_path = root / "cloud_app/analysis_v4/active_release.py"
+    spec = importlib.util.spec_from_file_location("active_release_validator", validator_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("ACTIVE release validator could not be loaded")
+    validator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(validator)
+
+    active_path = root / "data/releases/ACTIVE.json"
+    active = validator.validate_active_release(root)
+    artifact = active["artifacts"]["cloud_database"]
+    database = (root / str(artifact["path"])).resolve(strict=True)
+    return database, {
+        "schemaVersion": "sites-static-release.v1",
+        "transactionId": str(active["transaction_id"]),
+        "correctionVersion": str(active["correction_version"]),
+        "activeManifestSha256": sha256_file(active_path),
+        "promotionReceiptSha256": str(active["receipt"]["sha256"]),
+        "sourceDatabase": {
+            "path": str(artifact["path"]),
+            "bytes": int(artifact["bytes"]),
+            "sha256": str(artifact["sha256"]),
+        },
+    }
+
+
+def export(database: Path, output: Path, release: dict[str, Any]) -> None:
+    generated_at = datetime.now(UTC).isoformat()
     connection = duckdb.connect(str(database.resolve(strict=True)), read_only=True)
     manifest = connection.execute(
         """
@@ -232,8 +271,9 @@ def export(database: Path, output: Path) -> None:
                 "sourceRows": int(manifest[0]),
                 "questionCount": len(questions),
                 "builderVersion": str(manifest[2]),
-                "exportedAt": datetime.now(UTC).isoformat(),
+                "exportedAt": generated_at,
                 "dataMode": "aggregate-only",
+                "release": release,
             },
             "countries": [
                 {"code": code, "name": name} for code, name in countries.items()
@@ -347,23 +387,42 @@ def export(database: Path, output: Path) -> None:
             },
         )
 
+    connection.close()
+    file_hashes = {
+        path.relative_to(output).as_posix(): sha256_file(path)
+        for path in sorted(output.rglob("*.json"))
+        if path.name != "manifest.json"
+    }
+    content_digest = hashlib.sha256()
+    for relative_path, digest in file_hashes.items():
+        content_digest.update(f"{relative_path}\0{digest}\n".encode("utf-8"))
     write_json(
         output / "manifest.json",
         {
+            "schemaVersion": "sites-static-data-manifest.v2",
+            "release": release,
             "questionFiles": len(questions),
             "responseSetFiles": len(response_sets),
             "aggregateCells": sum(len(rows) for rows in cells.values()),
-            "generatedAt": datetime.now(UTC).isoformat(),
+            "generatedAt": generated_at,
+            "contentSha256": content_digest.hexdigest(),
+            "files": file_hashes,
         },
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("database", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--project-root",
+        type=Path,
+        default=Path(__file__).resolve().parents[2],
+        help="Workspace containing the authenticated data/releases/ACTIVE.json",
+    )
     args = parser.parse_args()
-    export(args.database, args.output)
+    database, release = authenticated_active_source(args.project_root)
+    export(database, args.output, release)
 
 
 if __name__ == "__main__":

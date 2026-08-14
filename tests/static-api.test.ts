@@ -136,7 +136,7 @@ test("catalog search returns a ranked complete candidate pool", async () => {
   );
 });
 
-test("local rerank output can only reorder grounded candidates", async () => {
+test("remote rerank output can only reorder grounded candidates", async () => {
   const data = await api.bootstrap();
   const candidates = ["q91", "q95", "q96"]
     .map((id) => data.questions.find((question) => question.variable_id === id))
@@ -149,7 +149,7 @@ test("local rerank output can only reorder grounded candidates", async () => {
   );
 });
 
-test("local rerank only overrides the baseline at high confidence", async () => {
+test("remote rerank only overrides the baseline at high confidence", async () => {
   const data = await api.bootstrap();
   const candidates = ["q91", "q96"]
     .map((id) => data.questions.find((question) => question.variable_id === id))
@@ -160,14 +160,14 @@ test("local rerank only overrides the baseline at high confidence", async () => 
       if (!init?.method) {
         return Response.json({
           available: true,
-          provider: "direct_ollama",
-          model: "gemma4:26b-mlx",
+          provider: "deepseek",
+          model: "deepseek-v4-flash",
         });
       }
       if (responseMode === "high") {
         return Response.json({
-          provider: "direct_ollama",
-          model: "gemma4:26b-mlx",
+          provider: "deepseek",
+          model: "deepseek-v4-flash",
           confidence: "high",
           candidate_ids: ["q96"],
           elapsed_ms: 50,
@@ -175,8 +175,8 @@ test("local rerank only overrides the baseline at high confidence", async () => 
       }
       if (responseMode === "medium") {
         return Response.json({
-          provider: "direct_ollama",
-          model: "gemma4:26b-mlx",
+          provider: "deepseek",
+          model: "deepseek-v4-flash",
           confidence: "medium",
           candidate_ids: ["q96"],
           elapsed_ms: 50,
@@ -192,8 +192,8 @@ test("local rerank only overrides the baseline at high confidence", async () => 
         });
       }
       return Response.json({
-        provider: "direct_ollama",
-        model: "gemma4:26b-mlx",
+        provider: "deepseek",
+        model: "deepseek-v4-flash",
         confidence: "high",
         candidate_ids: ["q999"],
         elapsed_ms: 50,
@@ -239,7 +239,7 @@ test("local rerank only overrides the baseline at high confidence", async () => 
   }
 });
 
-test("local rerank cannot replace an explicit own-country question with a named country", async () => {
+test("remote rerank cannot replace an explicit own-country question with a named country", async () => {
   const data = await api.bootstrap();
   const candidates = ["q96", "q129"]
     .map((id) => data.questions.find((question) => question.variable_id === id))

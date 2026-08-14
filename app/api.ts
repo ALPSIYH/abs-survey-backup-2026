@@ -56,7 +56,7 @@ interface StaticResponseSetData {
   >;
 }
 
-interface CloudCatalog extends StaticCatalog {
+export interface CloudCatalog extends StaticCatalog {
   responseSets: StaticResponseSetCatalog[];
 }
 
@@ -97,6 +97,7 @@ const QUESTION_CACHE = new Map<string, Promise<QuestionData>>();
 const RESPONSE_SET_CACHE = new Map<string, Promise<StaticResponseSetData>>();
 const CONVERSATIONS = new Map<string, ConversationState>();
 let catalogPromise: Promise<CloudCatalog> | null = null;
+let catalogReleaseFingerprint: string | null = null;
 let sequence = 0;
 
 const QUERY_ALIASES: Record<string, string> = {
@@ -264,11 +265,32 @@ function clonePlan(plan: ConversationPlan): ConversationPlan {
   };
 }
 
+function publicAssetUrl(relativePath: string): string {
+  const clean = relativePath.replace(/^\/+/, "");
+  if (typeof document !== "undefined") {
+    return new URL(clean, document.baseURI).toString();
+  }
+  return `/${clean}`;
+}
+
+export function seedCatalog(catalog: CloudCatalog): Bootstrap {
+  const fingerprint = catalog.dataset.release?.sourceDatabase.sha256 ?? null;
+  if (catalogReleaseFingerprint && fingerprint !== catalogReleaseFingerprint) {
+    QUESTION_CACHE.clear();
+    RESPONSE_SET_CACHE.clear();
+  }
+  catalogReleaseFingerprint = fingerprint;
+  catalogPromise = Promise.resolve(catalog);
+  return bootstrapFromCatalog(catalog);
+}
+
 function loadCatalog(): Promise<CloudCatalog> {
   if (!catalogPromise) {
-    catalogPromise = fetch("/data/catalog.json").then((response) => {
+    catalogPromise = fetch(publicAssetUrl("data/catalog.json"), { cache: "no-cache" }).then(async (response) => {
       if (!response.ok) throw new Error("The cloud survey catalog is unavailable.");
-      return response.json() as Promise<CloudCatalog>;
+      const catalog = await response.json() as CloudCatalog;
+      catalogReleaseFingerprint = catalog.dataset.release?.sourceDatabase.sha256 ?? null;
+      return catalog;
     });
   }
   return catalogPromise;
@@ -277,9 +299,15 @@ function loadCatalog(): Promise<CloudCatalog> {
 function loadQuestionData(id: string): Promise<QuestionData> {
   let request = QUESTION_CACHE.get(id);
   if (!request) {
-    request = fetch(`/data/questions/${encodeURIComponent(id)}.json`).then((response) => {
-      if (!response.ok) throw new Error("The requested survey item is unavailable.");
-      return response.json() as Promise<QuestionData>;
+    request = loadCatalog().then((catalog) => {
+      const version = catalog.dataset.release?.sourceDatabase.sha256.slice(0, 16) ?? "unversioned";
+      return fetch(
+        `${publicAssetUrl(`data/questions/${encodeURIComponent(id)}.json`)}?release=${version}`,
+        { cache: "force-cache" },
+      ).then((response) => {
+        if (!response.ok) throw new Error("The requested survey item is unavailable.");
+        return response.json() as Promise<QuestionData>;
+      });
     });
     QUESTION_CACHE.set(id, request);
   }
@@ -289,9 +317,15 @@ function loadQuestionData(id: string): Promise<QuestionData> {
 function loadResponseSetData(id: string): Promise<StaticResponseSetData> {
   let request = RESPONSE_SET_CACHE.get(id);
   if (!request) {
-    request = fetch(`/data/response-sets/${encodeURIComponent(id)}.json`).then((response) => {
-      if (!response.ok) throw new Error("The requested response set is unavailable.");
-      return response.json() as Promise<StaticResponseSetData>;
+    request = loadCatalog().then((catalog) => {
+      const version = catalog.dataset.release?.sourceDatabase.sha256.slice(0, 16) ?? "unversioned";
+      return fetch(
+        `${publicAssetUrl(`data/response-sets/${encodeURIComponent(id)}.json`)}?release=${version}`,
+        { cache: "force-cache" },
+      ).then((response) => {
+        if (!response.ok) throw new Error("The requested response set is unavailable.");
+        return response.json() as Promise<StaticResponseSetData>;
+      });
     });
     RESPONSE_SET_CACHE.set(id, request);
   }
@@ -383,8 +417,8 @@ function baseQuestionContexts(data: QuestionData): Context[] {
   );
 }
 
-async function bootstrap(): Promise<Bootstrap> {
-  const catalog = await loadCatalog();
+export function bootstrapFromCatalog(catalog: CloudCatalog): Bootstrap {
+  const release = catalog.dataset.release;
   return {
     dataset: {
       dataset_id: DATASET_ID,
@@ -392,6 +426,9 @@ async function bootstrap(): Promise<Bootstrap> {
       engine_version: ENGINE_VERSION,
       source_rows: catalog.dataset.sourceRows,
       question_count: catalog.dataset.questionCount,
+      release_transaction: release?.transactionId ?? null,
+      release_correction: release?.correctionVersion ?? null,
+      release_fingerprint: release?.sourceDatabase.sha256 ?? null,
     },
     countries: catalog.countries.map((country) => ({
       country_code: country.code,
@@ -417,6 +454,10 @@ async function bootstrap(): Promise<Bootstrap> {
       detail: "Deterministic survey planning with aggregate cloud analysis",
     },
   };
+}
+
+async function bootstrap(): Promise<Bootstrap> {
+  return bootstrapFromCatalog(await loadCatalog());
 }
 
 async function question(id: string): Promise<QuestionDetail> {
@@ -518,6 +559,7 @@ function hashDraft(draft: Draft): string {
 
 function metadata(
   draft: Draft,
+  builderVersion: string,
   totalRecords: number,
   includedRecords: number,
   elapsedMs: number,
@@ -526,7 +568,7 @@ function metadata(
   return {
     request_hash: hashDraft(draft),
     dataset_id: DATASET_ID,
-    builder_version: "merged-only-cloud-1",
+    builder_version: builderVersion,
     engine_version: ENGINE_VERSION,
     request_type: draft.operation ?? "distribution",
     weight_mode: "none",
@@ -670,6 +712,7 @@ async function analyzeQuestionDraft(draft: Draft): Promise<AnalysisEnvelope> {
       result_type: draft.operation,
       metadata: metadata(
         draft,
+        catalog.dataset.builderVersion,
         totalRecords,
         includedRecords,
         Date.now() - started,
@@ -786,6 +829,7 @@ async function analyzeResponseSetDraft(draft: Draft): Promise<AnalysisEnvelope> 
       result_type: "multi_response",
       metadata: metadata(
         { ...draft, operation: "multi_response" },
+        catalog.dataset.builderVersion,
         totalRecords,
         includedRecords,
         Date.now() - started,

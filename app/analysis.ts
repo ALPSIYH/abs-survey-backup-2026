@@ -32,6 +32,18 @@ export interface Catalog {
     builderVersion: string;
     exportedAt: string;
     dataMode: string;
+    release?: {
+      schemaVersion: string;
+      transactionId: string;
+      correctionVersion: string;
+      activeManifestSha256: string;
+      promotionReceiptSha256: string;
+      sourceDatabase: {
+        path: string;
+        bytes: number;
+        sha256: string;
+      };
+    };
   };
   countries: Country[];
   waves: number[];

@@ -1,17 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const OLLAMA_URL = "http://127.0.0.1:11434";
-const LOCAL_MODEL = "gemma4:26b-mlx";
-const LOCAL_MODEL_DIGEST =
-  "c8656f50f0a6d864cffd9471002949b027ce4173640c52720f04141c3d73232a";
 const DEEPSEEK_URL = "https://api.deepseek.com";
 const DEEPSEEK_MODEL = "deepseek-v4-flash";
 const MAX_CANDIDATES = 20;
 const MAX_BODY_CHARS = 48_000;
-const LOCAL_TIMEOUT_MS = 9_000;
 const DEEPSEEK_TIMEOUT_MS = 10_000;
 const REMOTE_REQUESTS_PER_MINUTE = 12;
-let localVerifiedUntil = 0;
+
 let deepseekVerifiedUntil = 0;
 let activeRequests = 0;
 const remoteRequestWindows = new Map<string, { count: number; resetAt: number }>();
@@ -39,10 +34,6 @@ function isLocalRequest(request: NextRequest): boolean {
 
 function runtimeSecret(name: string): string {
   return process.env[name]?.trim() ?? "";
-}
-
-function localRerankingEnabled(): boolean {
-  return runtimeSecret("DISABLE_LOCAL_RERANK") !== "1";
 }
 
 function sameOrigin(request: NextRequest): boolean {
@@ -77,42 +68,13 @@ function remoteRateLimitAllows(request: NextRequest): boolean {
   return true;
 }
 
-async function fetchJson(
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-): Promise<unknown> {
+async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
   const response = await fetch(url, {
     ...init,
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: AbortSignal.timeout(DEEPSEEK_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error("Provider request failed");
   return response.json();
-}
-
-async function verifyLocalModel(): Promise<void> {
-  if (Date.now() < localVerifiedUntil) return;
-  const document = await fetchJson(`${OLLAMA_URL}/api/tags`, {}, LOCAL_TIMEOUT_MS);
-  const models =
-    document && typeof document === "object"
-      ? (document as { models?: unknown }).models
-      : null;
-  if (
-    !Array.isArray(models)
-    || models.filter(
-      (item) =>
-        item
-        && typeof item === "object"
-        && (
-          (item as Record<string, unknown>).name === LOCAL_MODEL
-          || (item as Record<string, unknown>).model === LOCAL_MODEL
-        )
-        && (item as Record<string, unknown>).digest === LOCAL_MODEL_DIGEST,
-    ).length !== 1
-  ) {
-    throw new Error("Configured local model is unavailable");
-  }
-  localVerifiedUntil = Date.now() + 30_000;
 }
 
 async function verifyDeepSeek(apiKey: string): Promise<void> {
@@ -120,23 +82,17 @@ async function verifyDeepSeek(apiKey: string): Promise<void> {
   const document = await fetchJson(
     `${DEEPSEEK_URL}/models`,
     { headers: { Authorization: `Bearer ${apiKey}` } },
-    DEEPSEEK_TIMEOUT_MS,
   );
-  const models =
-    document && typeof document === "object"
-      ? (document as { data?: unknown }).data
-      : null;
+  const models = document && typeof document === "object"
+    ? (document as { data?: unknown }).data
+    : null;
   if (
     !Array.isArray(models)
-    || !models.some(
-      (item) =>
-        item
-        && typeof item === "object"
-        && (item as Record<string, unknown>).id === DEEPSEEK_MODEL,
-    )
-  ) {
-    throw new Error("Configured DeepSeek model is unavailable");
-  }
+    || !models.some((item) =>
+      item
+      && typeof item === "object"
+      && (item as Record<string, unknown>).id === DEEPSEEK_MODEL)
+  ) throw new Error("Configured DeepSeek model is unavailable");
   deepseekVerifiedUntil = Date.now() + 30_000;
 }
 
@@ -176,10 +132,7 @@ function rankingTool(maximum: number) {
             minItems: 1,
             maxItems: 8,
           },
-          confidence: {
-            type: "string",
-            enum: ["high", "medium", "low"],
-          },
+          confidence: { type: "string", enum: ["high", "medium", "low"] },
         },
         required: ["candidate_indices", "confidence"],
       },
@@ -199,82 +152,20 @@ function rankingInput(
   });
 }
 
-function validateRanking(
-  indices: unknown,
-  confidence: unknown,
-  maximum: number,
-): Ranking {
+function validateRanking(indices: unknown, confidence: unknown, maximum: number): Ranking {
   if (
     !Array.isArray(indices)
     || !indices.length
     || indices.length > 8
-    || !indices.every(
-      (index) => Number.isInteger(index) && Number(index) >= 0 && Number(index) <= maximum,
-    )
+    || !indices.every((index) =>
+      Number.isInteger(index) && Number(index) >= 0 && Number(index) <= maximum)
     || new Set(indices).size !== indices.length
     || !["high", "medium", "low"].includes(String(confidence))
-  ) {
-    throw new Error("Invalid model response");
-  }
+  ) throw new Error("Invalid model response");
   return {
     candidateIndices: indices.map(Number),
     confidence: confidence as Ranking["confidence"],
   };
-}
-
-async function rankWithOllama(
-  query: string,
-  normalizedQuery: string,
-  candidates: RerankCandidate[],
-): Promise<Ranking> {
-  await verifyLocalModel();
-  const maximum = candidates.length - 1;
-  const document = await fetchJson(
-    `${OLLAMA_URL}/api/chat`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: LOCAL_MODEL,
-        stream: false,
-        think: false,
-        keep_alive: "10m",
-        options: { temperature: 0, num_predict: 128 },
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: rankingInput(query, normalizedQuery, candidates) },
-        ],
-        tools: [rankingTool(maximum)],
-      }),
-    },
-    LOCAL_TIMEOUT_MS,
-  );
-  const response = document as {
-    model?: unknown;
-    done?: unknown;
-    message?: {
-      tool_calls?: Array<{
-        function?: {
-          name?: unknown;
-          arguments?: {
-            candidate_indices?: unknown;
-            confidence?: unknown;
-          };
-        };
-      }>;
-    };
-  };
-  const call = response.message?.tool_calls?.find(
-    (item) => item.function?.name === "record_question_ranking",
-  );
-  if (response.model !== LOCAL_MODEL || response.done !== true || !call) {
-    throw new Error("Invalid local model response");
-  }
-  return validateRanking(
-    call.function?.arguments?.candidate_indices,
-    call.function?.arguments?.confidence,
-    maximum,
-  );
 }
 
 async function rankWithDeepSeek(
@@ -309,7 +200,6 @@ async function rankWithDeepSeek(
         },
       }),
     },
-    DEEPSEEK_TIMEOUT_MS,
   );
   const response = document as {
     model?: unknown;
@@ -317,10 +207,7 @@ async function rankWithDeepSeek(
       finish_reason?: unknown;
       message?: {
         tool_calls?: Array<{
-          function?: {
-            name?: unknown;
-            arguments?: unknown;
-          };
+          function?: { name?: unknown; arguments?: unknown };
         }>;
       };
     }>;
@@ -333,9 +220,7 @@ async function rankWithDeepSeek(
     || response.choices?.[0]?.finish_reason !== "tool_calls"
     || !call
     || typeof call.function?.arguments !== "string"
-  ) {
-    throw new Error("Invalid DeepSeek response");
-  }
+  ) throw new Error("Invalid DeepSeek response");
   const args = JSON.parse(call.function.arguments) as {
     candidate_indices?: unknown;
     confidence?: unknown;
@@ -343,19 +228,7 @@ async function rankWithDeepSeek(
   return validateRanking(args.candidate_indices, args.confidence, maximum);
 }
 
-export async function GET(request: NextRequest): Promise<NextResponse> {
-  if (isLocalRequest(request) && localRerankingEnabled()) {
-    try {
-      await verifyLocalModel();
-      return NextResponse.json({
-        available: true,
-        provider: "direct_ollama",
-        model: LOCAL_MODEL,
-      });
-    } catch {
-      // Fall through to the configured remote provider.
-    }
-  }
+export async function GET(): Promise<NextResponse> {
   const apiKey = runtimeSecret("DEEPSEEK_API_KEY");
   if (!apiKey) return NextResponse.json({ available: false }, { status: 503 });
   try {
@@ -399,30 +272,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       || body.candidates.length < 2
       || body.candidates.length > MAX_CANDIDATES
       || !body.candidates.every(validCandidate)
-    ) {
-      return NextResponse.json({ error: "Invalid rerank request." }, { status: 400 });
-    }
-    const candidates = body.candidates as RerankCandidate[];
-    if (isLocalRequest(request) && localRerankingEnabled()) {
-      try {
-        const ranking = await rankWithOllama(
-          body.query,
-          body.normalized_query,
-          candidates,
-        );
-        return NextResponse.json({
-          provider: "direct_ollama",
-          model: LOCAL_MODEL,
-          confidence: ranking.confidence,
-          candidate_ids: ranking.candidateIndices.map(
-            (index) => candidates[index].variable_id,
-          ),
-          elapsed_ms: Date.now() - started,
-        });
-      } catch {
-        // A configured remote provider gets one controlled fallback attempt.
-      }
-    }
+    ) return NextResponse.json({ error: "Invalid rerank request." }, { status: 400 });
+
     const apiKey = runtimeSecret("DEEPSEEK_API_KEY");
     if (!apiKey) {
       return NextResponse.json({ error: "No model provider is available." }, { status: 503 });
@@ -430,6 +281,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (!remoteRateLimitAllows(request)) {
       return NextResponse.json({ error: "Remote rerank limit reached." }, { status: 429 });
     }
+    const candidates = body.candidates as RerankCandidate[];
     const ranking = await rankWithDeepSeek(
       apiKey,
       body.query,
@@ -440,9 +292,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       provider: "deepseek",
       model: DEEPSEEK_MODEL,
       confidence: ranking.confidence,
-      candidate_ids: ranking.candidateIndices.map(
-        (index) => candidates[index].variable_id,
-      ),
+      candidate_ids: ranking.candidateIndices.map((index) => candidates[index].variable_id),
       elapsed_ms: Date.now() - started,
     });
   } catch {
