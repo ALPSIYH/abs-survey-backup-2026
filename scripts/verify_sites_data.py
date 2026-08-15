@@ -84,6 +84,36 @@ def verify(project_root: Path, data_dir: Path) -> dict[str, Any]:
                 )
 
     catalog = json.loads((root / "catalog.json").read_text(encoding="utf-8"))
+    catalog_ids = [str(item["id"]) for item in catalog["questions"]]
+    if len(catalog_ids) != len(set(catalog_ids)):
+        raise RuntimeError("catalog contains duplicate logical question identifiers")
+    file_ids = {Path(name).stem for name in question_files}
+    if file_ids != set(catalog_ids):
+        raise RuntimeError("catalog and per-question files do not contain the same identifiers")
+    governed_q99 = {
+        "q99_expect_5y",
+        "q99_want_future",
+        "q99_expect_10y",
+    }
+    if "q99" in file_ids or {item for item in file_ids if item.startswith("q99")} != governed_q99:
+        raise RuntimeError("physical pooled q99 is exposed or governed q99 constructs are incomplete")
+    if int(catalog["dataset"]["questionCount"]) != len(catalog_ids):
+        raise RuntimeError("catalog question count is inconsistent")
+    catalog_by_id = {str(item["id"]): item for item in catalog["questions"]}
+    aggregate_cells = 0
+    for variable_id in catalog_ids:
+        payload = json.loads((root / "questions" / f"{variable_id}.json").read_text(encoding="utf-8"))
+        if payload.get("id") != variable_id or not payload.get("scale") or not payload.get("cells"):
+            raise RuntimeError(f"question payload is incomplete: {variable_id}")
+        declared_waves = {int(wave) for wave in catalog_by_id[variable_id]["waves"]}
+        observed_waves = {int(cell[1]) for cell in payload["cells"]}
+        if not observed_waves.issubset(declared_waves):
+            raise RuntimeError(
+                f"question payload contains cells from waves where it was not asked: {variable_id}"
+            )
+        aggregate_cells += len(payload["cells"])
+    if int(manifest.get("aggregateCells", -1)) != aggregate_cells:
+        raise RuntimeError("aggregate cell count is inconsistent")
     countries = {int(item["code"]): str(item["name"]) for item in catalog["countries"]}
     if countries.get(19) != "Bangladesh" or countries.get(20) != "Sri Lanka":
         raise RuntimeError("country identities 19 and 20 are invalid")
@@ -95,6 +125,7 @@ def verify(project_root: Path, data_dir: Path) -> dict[str, Any]:
         "sourceDatabaseSha256": release["sourceDatabase"]["sha256"],
         "contentSha256": manifest["contentSha256"],
         "questionFiles": len(question_files),
+        "governedQ99": sorted(governed_q99),
         "responseSetFiles": len(response_set_files),
         "countries19And20": [countries[19], countries[20]],
     }

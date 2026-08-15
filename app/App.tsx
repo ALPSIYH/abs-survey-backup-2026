@@ -36,7 +36,7 @@ import {
   type StaticDataBundle,
 } from "./api";
 import { missingScopeCells } from "./coverage";
-import { api, isLocalConversationUnavailableError } from "./hybrid-api";
+import { api } from "./hybrid-api";
 import {
   DEFAULT_LOCALE,
   cleanMarkdown,
@@ -655,15 +655,7 @@ function App({
   }
 
   function assistantFailureMessage(reason: unknown, fallback: string): string {
-    if (!isLocalConversationUnavailableError(reason)) {
-      return reason instanceof Error ? reason.message : fallback;
-    }
-    setAssistantConnection("cloud");
-    return bi(
-      locale,
-      "The local connection was interrupted. Your current result is unchanged. Start a new conversation to use the cloud service.",
-      "本地连接已中断。当前结果保持不变；如需使用云端服务，请开始新对话。",
-    );
+    return reason instanceof Error ? reason.message : fallback;
   }
 
   useEffect(() => {
@@ -1218,6 +1210,7 @@ function App({
   }
 
   async function applyConversationResponse(response: ConversationResponse): Promise<void> {
+    if (response.execution_mode) setAssistantConnection(response.execution_mode);
     setConversation(response);
     const isNewSnapshot = Boolean(
       response.active_snapshot

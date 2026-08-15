@@ -16,7 +16,7 @@ const rerankCache = new Map<string, string[]>();
 interface RerankerStatus {
   available: boolean;
   provider: "deepseek";
-  model: "deepseek-v4-flash";
+  model: string;
 }
 
 let statusCache: { value: RerankerStatus | null; expiresAt: number } = {
@@ -58,7 +58,8 @@ async function detectReranker(): Promise<RerankerStatus | null> {
         if (
           document.available !== true
           || document.provider !== "deepseek"
-          || document.model !== "deepseek-v4-flash"
+          || typeof document.model !== "string"
+          || !document.model
         ) return null;
         return document as RerankerStatus;
       })
@@ -171,7 +172,8 @@ export async function maybeRerankQuestions(
     const document = (await response.json()) as Partial<LocalRerankResponse>;
     if (
       document.provider !== "deepseek"
-      || document.model !== "deepseek-v4-flash"
+      || typeof document.model !== "string"
+      || !document.model
       || document.confidence !== "high"
       || !Array.isArray(document.candidate_ids)
       || !document.candidate_ids.length

@@ -29,8 +29,9 @@ test("Sites bridge accepts the opaque underscore conversation IDs emitted by V8.
     ));
     assert.equal(response.status, 200);
     assert.equal(upstreamPath, "/api/v1/conversations/conv_123/messages");
-    assert.equal(response.headers.get("x-survey-model-path"), "local-v8.2-2b");
-    assert.equal(response.headers.get("x-survey-channel"), "sites-gateway-8511");
+    assert.equal(response.headers.get("x-survey-execution"), "local");
+    assert.equal(response.headers.get("x-survey-channel"), "formal-local");
+    assert.equal(response.headers.get("x-survey-model-path"), null);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalOrigin === undefined) delete process.env.SURVEY_LIVE_API_ORIGIN;

@@ -61,7 +61,7 @@ function draft(
 
 test("bootstrap exposes the complete reviewed cloud catalog", async () => {
   const data = await api.bootstrap();
-  assert.equal(data.dataset.question_count, 199);
+  assert.equal(data.dataset.question_count, 201);
   assert.equal(data.dataset.source_rows, 118_961);
   assert.equal(data.countries.length, 18);
   assert.deepEqual(
@@ -422,6 +422,51 @@ test("assistant can execute a complete explicit request without extra clicks", a
     localizeAssistantMessage("en", response.message),
     /Completed the mean score analysis for q95/i,
   );
+});
+
+test("cloud takeover imports the last confirmed aggregate-safe conversation state", async () => {
+  const local = await api.createConversation();
+  const answered = await api.sendConversationMessage(
+    local.conversation_id,
+    "q95 Japan mean W2",
+    local.revision,
+  );
+  const portable = {
+    ...answered,
+    conversation_id: `imported_${Date.now()}`,
+    execution_mode: "local" as const,
+  };
+  const imported = api.importConversation(portable);
+  assert.equal(imported.execution_mode, "cloud");
+  const continued = await api.sendConversationMessage(
+    imported.conversation_id,
+    "switch to W3",
+    imported.revision,
+  );
+  assert.equal(continued.status, "answered");
+  assert.equal(continued.active_snapshot?.view.question_id, "q95");
+  assert.deepEqual(continued.active_snapshot?.draft.countries, [1]);
+  assert.deepEqual(continued.active_snapshot?.draft.waves, [3]);
+});
+
+test("cloud conversation rejects stale revisions without mutating state", async () => {
+  const conversation = await api.createConversation();
+  const answered = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "q95 Japan mean W2",
+    conversation.revision,
+  );
+  await assert.rejects(
+    api.sendConversationMessage(
+      conversation.conversation_id,
+      "switch to W3",
+      conversation.revision,
+    ),
+    /state changed/i,
+  );
+  const current = api.importConversation(answered);
+  assert.equal(current.revision, answered.revision);
+  assert.deepEqual(current.active_snapshot?.draft.waves, [2]);
 });
 
 test("assistant does not silently calculate means for category-only questions", async () => {

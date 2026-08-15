@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const DEEPSEEK_URL = "https://api.deepseek.com";
-const DEEPSEEK_MODEL = "deepseek-v4-flash";
+const DEFAULT_DEEPSEEK_URL = "https://api.deepseek.com";
+const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
 const MAX_CANDIDATES = 20;
 const MAX_BODY_CHARS = 48_000;
 const DEEPSEEK_TIMEOUT_MS = 10_000;
@@ -34,6 +34,24 @@ function isLocalRequest(request: NextRequest): boolean {
 
 function runtimeSecret(name: string): string {
   return process.env[name]?.trim() ?? "";
+}
+
+function deepSeekRuntime(): { baseUrl: string; model: string } {
+  const configuredUrl = runtimeSecret("DEEPSEEK_BASE_URL") || DEFAULT_DEEPSEEK_URL;
+  let baseUrl = DEFAULT_DEEPSEEK_URL;
+  try {
+    const parsed = new URL(configuredUrl);
+    if (parsed.protocol === "https:" && !parsed.username && !parsed.password) {
+      parsed.pathname = parsed.pathname.replace(/\/+$/u, "");
+      parsed.search = "";
+      parsed.hash = "";
+      baseUrl = parsed.toString().replace(/\/$/u, "");
+    }
+  } catch {
+    // Invalid provider configuration fails back to the reviewed HTTPS endpoint.
+  }
+  const model = runtimeSecret("DEEPSEEK_MODEL") || DEFAULT_DEEPSEEK_MODEL;
+  return { baseUrl, model };
 }
 
 function sameOrigin(request: NextRequest): boolean {
@@ -79,8 +97,9 @@ async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
 
 async function verifyDeepSeek(apiKey: string): Promise<void> {
   if (Date.now() < deepseekVerifiedUntil) return;
+  const runtime = deepSeekRuntime();
   const document = await fetchJson(
-    `${DEEPSEEK_URL}/models`,
+    `${runtime.baseUrl}/models`,
     { headers: { Authorization: `Bearer ${apiKey}` } },
   );
   const models = document && typeof document === "object"
@@ -91,7 +110,7 @@ async function verifyDeepSeek(apiKey: string): Promise<void> {
     || !models.some((item) =>
       item
       && typeof item === "object"
-      && (item as Record<string, unknown>).id === DEEPSEEK_MODEL)
+      && (item as Record<string, unknown>).id === runtime.model)
   ) throw new Error("Configured DeepSeek model is unavailable");
   deepseekVerifiedUntil = Date.now() + 30_000;
 }
@@ -175,9 +194,10 @@ async function rankWithDeepSeek(
   candidates: RerankCandidate[],
 ): Promise<Ranking> {
   await verifyDeepSeek(apiKey);
+  const runtime = deepSeekRuntime();
   const maximum = candidates.length - 1;
   const document = await fetchJson(
-    `${DEEPSEEK_URL}/chat/completions`,
+    `${runtime.baseUrl}/chat/completions`,
     {
       method: "POST",
       headers: {
@@ -185,7 +205,7 @@ async function rankWithDeepSeek(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: DEEPSEEK_MODEL,
+        model: runtime.model,
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: rankingInput(query, normalizedQuery, candidates) },
@@ -216,7 +236,7 @@ async function rankWithDeepSeek(
     (item) => item.function?.name === "record_question_ranking",
   );
   if (
-    response.model !== DEEPSEEK_MODEL
+    response.model !== runtime.model
     || response.choices?.[0]?.finish_reason !== "tool_calls"
     || !call
     || typeof call.function?.arguments !== "string"
@@ -233,10 +253,11 @@ export async function GET(): Promise<NextResponse> {
   if (!apiKey) return NextResponse.json({ available: false }, { status: 503 });
   try {
     await verifyDeepSeek(apiKey);
+    const runtime = deepSeekRuntime();
     return NextResponse.json({
       available: true,
       provider: "deepseek",
-      model: DEEPSEEK_MODEL,
+      model: runtime.model,
     });
   } catch {
     return NextResponse.json({ available: false }, { status: 503 });
@@ -282,6 +303,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ error: "Remote rerank limit reached." }, { status: 429 });
     }
     const candidates = body.candidates as RerankCandidate[];
+    const runtime = deepSeekRuntime();
     const ranking = await rankWithDeepSeek(
       apiKey,
       body.query,
@@ -290,7 +312,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
     return NextResponse.json({
       provider: "deepseek",
-      model: DEEPSEEK_MODEL,
+      model: runtime.model,
       confidence: ranking.confidence,
       candidate_ids: ranking.candidateIndices.map((index) => candidates[index].variable_id),
       elapsed_ms: Date.now() - started,

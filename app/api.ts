@@ -300,12 +300,18 @@ export function seedDataBundle(bundle: StaticDataBundle): void {
 
 function loadCatalog(): Promise<CloudCatalog> {
   if (!catalogPromise) {
-    catalogPromise = fetch(publicAssetUrl("data/catalog.json"), { cache: "no-cache" }).then(async (response) => {
-      if (!response.ok) throw new Error("The cloud survey catalog is unavailable.");
-      const catalog = await response.json() as CloudCatalog;
-      catalogReleaseFingerprint = catalog.dataset.release?.sourceDatabase.sha256 ?? null;
-      return catalog;
-    });
+    catalogPromise = fetch(publicAssetUrl("data/catalog.json"), { cache: "no-cache" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("The cloud survey catalog is unavailable.");
+        const catalog = await response.json() as CloudCatalog;
+        catalogReleaseFingerprint = catalog.dataset.release?.sourceDatabase.sha256 ?? null;
+        return catalog;
+      })
+      .catch((reason) => {
+        catalogPromise = null;
+        catalogReleaseFingerprint = null;
+        throw reason;
+      });
   }
   return catalogPromise;
 }
@@ -322,6 +328,10 @@ function loadQuestionData(id: string): Promise<QuestionData> {
         if (!response.ok) throw new Error("The requested survey item is unavailable.");
         return response.json() as Promise<QuestionData>;
       });
+    });
+    request = request.catch((reason) => {
+      QUESTION_CACHE.delete(id);
+      throw reason;
     });
     QUESTION_CACHE.set(id, request);
   }
@@ -340,6 +350,10 @@ function loadResponseSetData(id: string): Promise<StaticResponseSetData> {
         if (!response.ok) throw new Error("The requested response set is unavailable.");
         return response.json() as Promise<StaticResponseSetData>;
       });
+    });
+    request = request.catch((reason) => {
+      RESPONSE_SET_CACHE.delete(id);
+      throw reason;
     });
     RESPONSE_SET_CACHE.set(id, request);
   }
@@ -1635,10 +1649,13 @@ function applyConversationModifiers(
 async function sendConversationMessage(
   conversationId: string,
   message: string,
-  _expectedRevision: number,
+  expectedRevision: number,
 ): Promise<ConversationResponse> {
   const state = CONVERSATIONS.get(conversationId);
   if (!state) throw new Error("The conversation is no longer available.");
+  if (expectedRevision !== state.revision) {
+    throw new Error("The analysis state changed. Review the latest result before trying again.");
+  }
   state.revision += 1;
   addTurn(state, "user", message);
   const trimmed = message.trim();
@@ -1782,11 +1799,14 @@ async function selectPendingOption(
 async function sendConversationCommand(
   conversationId: string,
   command: ConversationCommand,
-  _expectedRevision: number,
+  expectedRevision: number,
   displayLabel?: string,
 ): Promise<ConversationResponse> {
   const state = CONVERSATIONS.get(conversationId);
   if (!state) throw new Error("The conversation is no longer available.");
+  if (expectedRevision !== state.revision) {
+    throw new Error("The analysis state changed. Review the latest result before trying again.");
+  }
   state.revision += 1;
   if (displayLabel) addTurn(state, "user", displayLabel);
   state.previousPlan = clonePlan(state.plan);
@@ -1873,6 +1893,61 @@ async function createConversation(): Promise<ConversationResponse> {
   return publicConversation(state, "answered", "discussed");
 }
 
+function planFromConversation(response: ConversationResponse): ConversationPlan {
+  const draft = response.active_snapshot?.draft;
+  const plan: ConversationPlan = {
+    questionId: draft?.target_kind === "question" ? draft.target_id : null,
+    statistic: response.active_snapshot?.view.statistic ?? null,
+    countries: [...(draft?.countries ?? [])],
+    waves: [...(draft?.waves ?? [])],
+  };
+  if (draft) return plan;
+  for (const turn of response.turns) {
+    if (turn.role !== "user") continue;
+    const statistic = parseStatistic(turn.message);
+    const countries = parseCountries(turn.message);
+    const waves = parseWaves(turn.message);
+    if (statistic) plan.statistic = statistic;
+    if (countries.values.length) {
+      plan.countries = applyListChange(plan.countries, countries.operation, countries.values);
+    }
+    if (waves.values.length) {
+      plan.waves = applyListChange(plan.waves, waves.operation, waves.values);
+    }
+    const explicitId = turn.message.match(/\bq\d+(?:\.\d+)?\b/i)?.[0]?.toLowerCase();
+    if (explicitId) plan.questionId = explicitId;
+  }
+  return plan;
+}
+
+/**
+ * Imports only the public, aggregate-safe conversation contract already held by
+ * the browser.  This lets a local-started conversation continue after a bridge
+ * outage without contacting the unavailable Mac or uploading respondent data.
+ */
+function importConversation(response: ConversationResponse): ConversationResponse {
+  const existing = CONVERSATIONS.get(response.conversation_id);
+  if (existing && existing.revision > response.revision) {
+    return publicConversation(existing, "answered", "discussed");
+  }
+  const plan = planFromConversation(response);
+  const state: ConversationState = {
+    id: response.conversation_id,
+    revision: response.revision,
+    turns: response.turns.map((turn) => ({ ...turn })),
+    plan,
+    questionQuery: response.pending?.kind === "question"
+      ? [...response.turns].reverse().find((turn) => turn.role === "user")?.message ?? null
+      : null,
+    pending: response.pending ? { ...response.pending } : null,
+    options: response.options.map((option) => ({ ...option })),
+    activeSnapshot: response.active_snapshot,
+    previousPlan: null,
+  };
+  CONVERSATIONS.set(state.id, state);
+  return { ...response, execution_mode: "cloud" };
+}
+
 async function startNewQuestion(conversationId: string): Promise<ConversationResponse> {
   const state = CONVERSATIONS.get(conversationId);
   if (!state) throw new Error("The conversation is no longer available.");
@@ -1914,6 +1989,7 @@ export const api = {
     };
   },
   createConversation,
+  importConversation,
   sendConversationMessage,
   sendConversationCommand,
   startNewQuestion,

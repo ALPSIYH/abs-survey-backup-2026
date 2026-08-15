@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import re
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,7 +38,10 @@ RESPONSE_SET_LABELS = {
 
 
 def topic_for(variable_id: str) -> str:
-    number = int(variable_id.removeprefix("q").split(".", 1)[0])
+    match = re.match(r"^q(\d+)", variable_id)
+    if match is None:
+        raise ValueError(f"Invalid question identifier: {variable_id}")
+    number = int(match.group(1))
     for topic_id, _, _, first, last in TOPICS:
         if first <= number <= last:
             return topic_id
@@ -125,27 +129,38 @@ def export(database: Path, output: Path, release: dict[str, Any]) -> None:
     question_rows = connection.execute(
         """
         SELECT
-            q.variable_id,
-            v.source_position,
-            COALESCE(v.canonical_label, q.variable_id),
-            q.selection_mode,
-            q.response_set_id,
-            q.member_order,
-            c.category_available,
-            c.ordinal_available,
-            c.continuous_available
-        FROM semantic.question_settings AS q
-        JOIN metadata.variables AS v USING (variable_id)
-        JOIN semantic.question_capabilities AS c USING (variable_id)
-        ORDER BY v.source_position
+            variable_id,
+            source_position,
+            canonical_label,
+            selection_mode,
+            response_set_id,
+            member_order,
+            category_available,
+            ordinal_available,
+            continuous_available,
+            is_construct
+        FROM semantic.analysis_question_catalog
+        WHERE dashboard_visible
+        ORDER BY source_position, display_order, variable_id
         """
     ).fetchall()
     waves_by_question: dict[str, list[int]] = defaultdict(list)
     for variable_id, wave in connection.execute(
         """
-        SELECT variable_id, wave
-        FROM metadata.variable_wave
-        WHERE is_present
+        SELECT c.variable_id, vw.wave
+        FROM semantic.analysis_question_catalog AS c
+        JOIN metadata.variable_wave AS vw
+          ON vw.variable_id = c.physical_variable_id
+         AND vw.is_present
+        WHERE c.dashboard_visible
+          AND NOT c.is_construct
+        UNION
+        SELECT c.variable_id, cc.wave
+        FROM semantic.analysis_question_catalog AS c
+        JOIN semantic.question_construct_contexts AS cc
+          ON cc.construct_id = c.variable_id
+        WHERE c.dashboard_visible
+          AND c.is_construct
         ORDER BY variable_id, wave
         """
     ).fetchall():
@@ -247,12 +262,87 @@ def export(database: Path, output: Path, release: dict[str, Any]) -> None:
             ]
         )
 
+    for row in connection.execute(
+        """
+        SELECT
+            construct_id,
+            raw_value,
+            raw_value_key,
+            category_label,
+            category_status,
+            order_position,
+            order_status,
+            continuous_score,
+            continuous_status
+        FROM semantic.construct_value_settings
+        ORDER BY
+            construct_id,
+            CASE WHEN order_position IS NULL THEN 1 ELSE 0 END,
+            order_position,
+            raw_value NULLS LAST
+        """
+    ).fetchall():
+        scales[str(row[0])].append(
+            [
+                clean_number(row[1]),
+                str(row[2]),
+                str(row[3]),
+                str(row[4]),
+                None if row[5] is None else int(row[5]),
+                str(row[6]),
+                clean_number(row[7]),
+                str(row[8]),
+            ]
+        )
+
     cells: dict[str, list[list[object]]] = defaultdict(list)
     for row in connection.execute(
         """
-        SELECT variable_id, country_code, wave, raw_value, unweighted_n
-        FROM analytics.question_value_summary
-        ORDER BY variable_id, country_code, wave, raw_value NULLS LAST
+        SELECT
+            c.variable_id,
+            q.country_code,
+            q.wave,
+            q.raw_value,
+            q.unweighted_n
+        FROM analytics.question_value_summary AS q
+        JOIN semantic.analysis_question_catalog AS c
+          ON c.physical_variable_id = q.variable_id
+         AND c.dashboard_visible
+         AND NOT c.is_construct
+        JOIN metadata.variable_wave AS vw
+          ON vw.variable_id = c.physical_variable_id
+         AND vw.wave = q.wave
+         AND vw.is_present
+        ORDER BY c.variable_id, q.country_code, q.wave, q.raw_value NULLS LAST
+        """
+    ).fetchall():
+        cells[str(row[0])].append(
+            [
+                int(float(row[1])),
+                int(row[2]),
+                clean_number(row[3]),
+                int(row[4]),
+            ]
+        )
+
+    for row in connection.execute(
+        """
+        SELECT
+            c.variable_id,
+            q.country_code,
+            q.wave,
+            q.raw_value,
+            q.unweighted_n
+        FROM analytics.construct_value_summary AS q
+        JOIN semantic.analysis_question_catalog AS c
+          ON c.variable_id = q.variable_id
+         AND c.dashboard_visible
+         AND c.is_construct
+        JOIN semantic.question_construct_contexts AS cc
+          ON cc.construct_id = c.variable_id
+         AND cc.country_code = q.country_code
+         AND cc.wave = q.wave
+        ORDER BY c.variable_id, q.country_code, q.wave, q.raw_value NULLS LAST
         """
     ).fetchall():
         cells[str(row[0])].append(
@@ -333,7 +423,15 @@ def export(database: Path, output: Path, release: dict[str, Any]) -> None:
             ORDER BY country, wave
             """
         ).fetchall()
-        scope_bases: dict[str, Counter[tuple[int, int]]] = defaultdict(Counter)
+        # Availability and analytical eligibility are intentionally different
+        # for a specific member slot.  A slot is selectable only where that
+        # slot has at least one valid response, while the canonical analysis
+        # denominator is every respondent with a valid answer in any slot.
+        # Keeping these concepts separate prevents empty slot contexts from
+        # appearing in the UI without reverting to the old, too-small slot
+        # denominator.
+        any_bases: Counter[tuple[int, int]] = Counter()
+        scope_contexts: dict[str, set[tuple[int, int]]] = defaultdict(set)
         scope_counts: dict[
             str,
             Counter[tuple[int, int, float]],
@@ -348,32 +446,32 @@ def export(database: Path, output: Path, release: dict[str, Any]) -> None:
             valid_values = [value for value in values if value in allowed]
             if valid_values:
                 context = (country_code, wave)
-                scope_bases["any"][context] += 1
+                any_bases[context] += 1
+                scope_contexts["any"].add(context)
                 for raw_value in set(valid_values):
                     scope_counts["any"][(country_code, wave, raw_value)] += 1
             for member, value in zip(members, values, strict=True):
-                if value not in allowed:
-                    continue
                 scope = str(member["memberOrder"])
                 context = (country_code, wave)
-                scope_bases[scope][context] += 1
-                scope_counts[scope][(country_code, wave, value)] += 1
+                if value in allowed:
+                    scope_contexts[scope].add(context)
+                    scope_counts[scope][(country_code, wave, value)] += 1
 
         scopes: dict[str, object] = {}
         for scope in ["any", *[str(member["memberOrder"]) for member in members]]:
-            bases = scope_bases[scope]
+            contexts = scope_contexts[scope]
             counts = scope_counts[scope]
             scopes[scope] = {
                 "contexts": [
-                    [country_code, wave, int(base_n)]
-                    for (country_code, wave), base_n in sorted(bases.items())
+                    [country_code, wave, int(any_bases[(country_code, wave)])]
+                    for country_code, wave in sorted(contexts)
                 ],
                 "rows": [
                     [
                         country_code,
                         wave,
                         clean_number(raw_value),
-                        int(bases[(country_code, wave)]),
+                        int(any_bases[(country_code, wave)]),
                         int(count),
                     ]
                     for (country_code, wave, raw_value), count in sorted(counts.items())
@@ -414,7 +512,9 @@ def export(database: Path, output: Path, release: dict[str, Any]) -> None:
             "release": release,
             "questionFiles": len(questions),
             "responseSetFiles": len(response_sets),
-            "aggregateCells": sum(len(rows) for rows in cells.values()),
+            "aggregateCells": sum(
+                len(cells[str(question["id"])]) for question in questions
+            ),
             "generatedAt": generated_at,
             "contentSha256": content_digest.hexdigest(),
             "files": file_hashes,

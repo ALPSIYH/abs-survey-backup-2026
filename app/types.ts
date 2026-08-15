@@ -301,6 +301,7 @@ export interface ConversationSnapshot {
 
 export interface ConversationResponse {
   conversation_id: string;
+  execution_mode?: "local" | "cloud";
   revision: number;
   status: "answered" | "needs_clarification" | "unsupported" | "tool_error";
   action: "analyzed" | "revised" | "clarified" | "acknowledged" | "discussed" | "no_op" | "unsupported" | "tool_error";

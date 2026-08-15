@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { api } from "../app/live-api";
-import { bridgeMatchesEmbeddedRelease } from "../app/hybrid-api";
+import { bridgeMatchesEmbeddedContract, bridgeMatchesEmbeddedRelease } from "../app/hybrid-api";
 
 
 test("live client uses the shared versioned API instead of packaged calculations", async () => {
@@ -72,4 +72,30 @@ test("V8.2 bridge is accepted only for the exact embedded ACTIVE data release", 
     }, embedded),
     false,
   );
+});
+
+test("bridge contract must contain the exact governed logical question identifiers", () => {
+  const embedded = {
+    dataset: { question_count: 3 },
+    questions: [
+      { variable_id: "q99_expect_5y" },
+      { variable_id: "q99_want_future" },
+      { variable_id: "q99_expect_10y" },
+    ],
+    response_sets: [{ response_set_id: "organization_membership" }],
+  } as never;
+  assert.equal(bridgeMatchesEmbeddedContract({
+    dataset: { question_count: 3 },
+    questions: [
+      { variable_id: "q99_expect_10y" },
+      { variable_id: "q99_expect_5y" },
+      { variable_id: "q99_want_future" },
+    ],
+    response_sets: [{ response_set_id: "organization_membership" }],
+  }, embedded), true);
+  assert.equal(bridgeMatchesEmbeddedContract({
+    dataset: { question_count: 1 },
+    questions: [{ variable_id: "q99" }],
+    response_sets: [{ response_set_id: "organization_membership" }],
+  }, embedded), false);
 });

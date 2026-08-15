@@ -23,12 +23,18 @@ function liveApiOrigin(): URL | null {
   }
 }
 
-function isAllowedPath(pathname: string): boolean {
+function isAllowedRequest(method: string, pathname: string): boolean {
+  if (method === "GET") {
+    return [
+      /^\/api\/v1\/(?:health|bootstrap|assistant\/status)$/u,
+      /^\/api\/v1\/(?:questions|response-sets)\/q?[a-z0-9._-]+$/iu,
+    ].some((pattern) => pattern.test(pathname));
+  }
+  if (method !== "POST") return false;
   return [
-    /^\/api\/v1\/(?:health|bootstrap|assistant\/status)$/u,
     /^\/api\/v1\/(?:catalog\/search|analyses|drafts\/validate|assistant\/plans)$/u,
-    /^\/api\/v1\/(?:questions|response-sets)\/q?[a-z0-9._-]+$/iu,
-    /^\/api\/v1\/conversations(?:\/[a-z0-9_-]+\/(?:messages|new-question))?$/iu,
+    /^\/api\/v1\/conversations$/u,
+    /^\/api\/v1\/conversations\/[a-z0-9_-]+\/(?:messages|new-question)$/iu,
   ].some((pattern) => pattern.test(pathname));
 }
 
@@ -45,13 +51,14 @@ function isSameOrigin(request: NextRequest): boolean {
 async function proxy(request: NextRequest): Promise<NextResponse> {
   const incoming = new URL(request.url);
   const origin = liveApiOrigin();
-  if (!origin) {
+  const token = process.env.SURVEY_LIVE_API_TOKEN?.trim();
+  if (!origin || !token) {
     return NextResponse.json(
       { detail: "The local survey service is not configured; cloud and deterministic analysis remain available." },
       { status: 503, headers: { "Cache-Control": "no-store" } },
     );
   }
-  if (!isAllowedPath(incoming.pathname) || !isSameOrigin(request)) {
+  if (!isAllowedRequest(request.method, incoming.pathname) || !isSameOrigin(request)) {
     return NextResponse.json(
       { detail: "This bridge request is not allowed." },
       { status: 403, headers: { "Cache-Control": "no-store" } },
@@ -70,8 +77,7 @@ async function proxy(request: NextRequest): Promise<NextResponse> {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
-  const token = process.env.SURVEY_LIVE_API_TOKEN?.trim();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
+  headers.set("Authorization", `Bearer ${token}`);
 
   try {
     const body = request.method === "GET" || request.method === "HEAD"
@@ -99,11 +105,8 @@ async function proxy(request: NextRequest): Promise<NextResponse> {
     };
     if (response.ok) {
       Object.assign(responseHeaders, {
-        "X-Survey-Bridge": "v8.2-primary",
-        "X-Survey-Primary": "local-v8.2-2b",
-        "X-Survey-Fallback": "deepseek-v4-flash",
-        "X-Survey-Model-Path": "local-v8.2-2b",
-        "X-Survey-Channel": "sites-gateway-8511",
+        "X-Survey-Execution": "local",
+        "X-Survey-Channel": "formal-local",
       });
     }
     return new NextResponse(response.body, {

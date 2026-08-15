@@ -25,12 +25,37 @@ const LOCAL_API_TIMEOUT_MS = 20_000;
 const MAX_BODY_BYTES = 128_000;
 const RETRYABLE_LOCAL_STATUS_CODES = new Set([502, 503, 504]);
 
+function staticCacheControl(request: Request): string {
+  const url = new URL(request.url);
+  if (/^\/assets\/[a-z0-9_-]+\.[a-z0-9]+$/iu.test(url.pathname)) {
+    return "public, max-age=31536000, immutable";
+  }
+  if (
+    /^\/data\/(?:questions|response-sets)\/[a-z0-9._-]+\.json$/iu.test(url.pathname)
+    && /^[a-f0-9]{12,64}$/iu.test(url.searchParams.get("release") ?? "")
+  ) {
+    return "public, max-age=31536000, immutable";
+  }
+  if (url.pathname === "/icon.svg") return "public, max-age=86400";
+  return "public, max-age=0, must-revalidate";
+}
+
+function withStaticCache(request: Request, response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", staticCacheControl(request));
+  return new Response(request.method === "HEAD" ? null : response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 async function serveIndependentStaticSite(
   request: Request,
   assets: Fetcher,
 ): Promise<Response | null> {
   const direct = await assets.fetch(request);
-  if (direct.status !== 404) return direct;
+  if (direct.status !== 404) return withStaticCache(request, direct);
 
   const acceptsHtml = request.headers.get("accept")?.includes("text/html") ?? true;
   if (!acceptsHtml) return direct;
@@ -38,7 +63,22 @@ async function serveIndependentStaticSite(
   indexUrl.pathname = "/index.html";
   indexUrl.search = "";
   const index = await assets.fetch(new Request(indexUrl, request));
-  return index.status === 404 ? null : index;
+  return index.status === 404 ? null : withStaticCache(request, index);
+}
+
+function isAllowedRequest(method: string, pathname: string): boolean {
+  if (method === "GET") {
+    return [
+      /^\/api\/v1\/(?:health|bootstrap|assistant\/status)$/u,
+      /^\/api\/v1\/(?:questions|response-sets)\/q?[a-z0-9._-]+$/iu,
+    ].some((pattern) => pattern.test(pathname));
+  }
+  if (method !== "POST") return false;
+  return [
+    /^\/api\/v1\/(?:catalog\/search|analyses|drafts\/validate|assistant\/plans)$/u,
+    /^\/api\/v1\/conversations$/u,
+    /^\/api\/v1\/conversations\/[a-z0-9_-]+\/(?:messages|new-question)$/iu,
+  ].some((pattern) => pattern.test(pathname));
 }
 
 function sameOrigin(request: Request): boolean {
@@ -94,14 +134,15 @@ async function tryLocalV82(request: Request, env: Env): Promise<Response | null>
     );
     const response = await binding.fetch(upstream);
     if (RETRYABLE_LOCAL_STATUS_CODES.has(response.status)) return null;
-    const responseHeaders = new Headers(response.headers);
-    responseHeaders.set("Cache-Control", "no-store");
+    const responseHeaders = new Headers({
+      "Cache-Control": "no-store",
+      "Content-Type": response.headers.get("content-type") ?? "application/json",
+    });
+    const retryAfter = response.headers.get("retry-after");
+    if (retryAfter) responseHeaders.set("Retry-After", retryAfter);
     if (response.ok) {
-      responseHeaders.set("X-Survey-Bridge", "cloudflare-vpc-8512");
-      responseHeaders.set("X-Survey-Primary", "local-v8.2-2b");
-      responseHeaders.set("X-Survey-Fallback", "deepseek-v4-flash");
-      responseHeaders.set("X-Survey-Model-Path", "local-v8.2-2b");
-      responseHeaders.set("X-Survey-Channel", "cloudflare-vpc-8512");
+      responseHeaders.set("X-Survey-Execution", "local");
+      responseHeaders.set("X-Survey-Channel", "backup-local");
     }
     return new Response(response.body, {
       status: response.status,
@@ -123,6 +164,12 @@ const worker = {
     const url = new URL(request.url);
 
     if (url.pathname.startsWith("/api/v1/")) {
+      if (!isAllowedRequest(request.method, url.pathname)) {
+        return Response.json(
+          { detail: "This bridge request is not allowed." },
+          { status: 403, headers: { "Cache-Control": "no-store" } },
+        );
+      }
       const localResponse = await tryLocalV82(request, env);
       if (localResponse) return localResponse;
     }
