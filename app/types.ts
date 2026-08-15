@@ -240,11 +240,83 @@ export interface ConversationAppliedDelta {
 }
 
 export type ConversationCommand =
+  | { kind: "select_question"; question_id: string }
+  | {
+      kind: "search_questions";
+      purpose: "analyze" | "discover";
+      query_original: string;
+      query_en?: string | null;
+      object_entities?: string[];
+    }
   | { kind: "select_pending_option"; pending_id: string; option_id: string }
   | { kind: "modify_countries"; operation: "set" | "add" | "remove"; values?: string[]; selector?: "explicit" | "all_available" }
-  | { kind: "modify_waves"; operation: "set" | "add" | "remove"; values?: number[]; selector: "explicit" | "all_available" | "latest" | "latest_three" | "latest_two" | "previous" }
+  | {
+      kind: "modify_waves";
+      operation: "set" | "add" | "remove";
+      values?: number[];
+      selector:
+        | "explicit"
+        | "from_wave"
+        | "through"
+        | "through_latest"
+        | "ensure_multiple"
+        | "all_available"
+        | "all_six"
+        | "earliest"
+        | "earliest_three"
+        | "latest"
+        | "latest_three"
+        | "latest_two"
+        | "previous";
+    }
+  | { kind: "modify_categories"; operation: "set" | "add" | "remove"; values: string[] }
   | { kind: "set_statistic"; statistic: StatisticalView["statistic"] }
-  | { kind: "repair"; operation: "undo_last_change" | "restore_snapshot" | "cancel_pending" | "restart_question"; target_id?: string | null };
+  | { kind: "set_representation"; representation: Mode }
+  | { kind: "discuss_result"; topic: "interpretation" | "coverage" | "direction" | "causality" | "other" }
+  | { kind: "repair"; operation: "undo_last_change" | "restore_snapshot" | "cancel_pending" | "restart_question"; target_id?: string | null }
+  | { kind: "social"; operation: "thanks" | "acknowledge" | "close" };
+
+export interface TurnProgramUnresolvedReference {
+  slot: "relation" | "question" | "country_role" | "wave" | "statistic" | "other";
+  detail: string;
+}
+
+export interface TurnProgram {
+  schema_version: 1;
+  relation: "start" | "revise" | "answer_pending" | "discover" | "discuss" | "repair" | "social" | "unclear";
+  commands: ConversationCommand[];
+  unresolved: TurnProgramUnresolvedReference[];
+  source: "model";
+}
+
+export interface CloudTurnContext {
+  latest_message: string;
+  current_goal: {
+    question_id: string | null;
+    question_text: string | null;
+    respondent_countries: string[];
+    country_codes: number[];
+    waves: number[];
+    statistic: StatisticalView["statistic"] | null;
+    representation: Mode | null;
+    category_options: string[];
+    selected_category_labels: string[];
+  } | null;
+  pending: {
+    pending_id: string;
+    kind: string;
+    assistant_question: string | null;
+    allowed_options: Array<{
+      option_id: string;
+      label: string;
+      value: string;
+      description: string | null;
+    }>;
+  } | null;
+  recent_exchanges: Array<{ role: "user" | "assistant"; content: string }>;
+  prior_effective_change: boolean;
+  turn_mode: "start" | "continue";
+}
 
 export interface ConversationSuggestion {
   action_id: string;

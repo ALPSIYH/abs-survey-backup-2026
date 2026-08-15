@@ -27,6 +27,7 @@ globalThis.fetch = async (input: string | URL | Request): Promise<Response> => {
 };
 
 const { api, catalogMatch } = await import("../app/api");
+const { setCloudTurnProgramResolverForTests } = await import("../app/cloud-turn-program");
 const { localizeAssistantMessage, localizeOptionLabel } = await import("../app/i18n");
 const {
   applyRerankOrder,
@@ -697,38 +698,172 @@ test("assistant treats English switch-to phrases as scope changes", async () => 
   assert.deepEqual(waves.active_snapshot?.draft.waves, [1, 2, 3, 4, 5, 6]);
 });
 
-test("country-only Chinese follow-ups preserve the current q95 and q96 analyses", async () => {
-  const q95Conversation = await api.createConversation();
-  const q95 = await api.sendConversationMessage(
-    q95Conversation.conversation_id,
-    "q95 全部国家 回答分布 全部可用波次",
-    q95Conversation.revision,
-  );
-  const restricted = await api.sendConversationMessage(
-    q95Conversation.conversation_id,
+test("model-routed scope edits preserve the active question and statistic across paraphrases", async () => {
+  const setPrompts = [
+    "只留下日韩两国",
+    "受访地区改为韩国及日本",
+    "把当前范围缩到 Japan 和 South Korea",
     "我只要看日本和韩国的",
-    q95.revision,
-  );
-  assert.equal(restricted.status, "answered");
-  assert.equal(restricted.active_snapshot?.view.question_id, "q95");
-  assert.equal(restricted.active_snapshot?.view.statistic, "distribution");
-  assert.deepEqual(restricted.active_snapshot?.draft.countries, [1, 3]);
+  ];
+  for (const prompt of setPrompts) {
+    const conversation = await api.createConversation();
+    const initial = await api.sendConversationMessage(
+      conversation.conversation_id,
+      "q95 全部国家 回答分布 全部可用波次",
+      conversation.revision,
+    );
+    setCloudTurnProgramResolverForTests(async (context) => {
+      assert.equal(context.latest_message, prompt);
+      assert.equal(context.current_goal?.question_id, "q95");
+      assert.equal(context.current_goal?.statistic, "distribution");
+      return {
+        schema_version: 1,
+        relation: "revise",
+        commands: [{
+          kind: "modify_countries",
+          operation: "set",
+          values: ["Japan", "South Korea"],
+          selector: "explicit",
+        }],
+        unresolved: [],
+        source: "model",
+      };
+    });
+    try {
+      const revised = await api.sendConversationMessage(
+        conversation.conversation_id,
+        prompt,
+        initial.revision,
+      );
+      assert.equal(revised.status, "answered", prompt);
+      assert.equal(revised.active_snapshot?.view.question_id, "q95", prompt);
+      assert.equal(revised.active_snapshot?.view.statistic, "distribution", prompt);
+      assert.deepEqual(revised.active_snapshot?.draft.countries, [1, 3], prompt);
+    } finally {
+      setCloudTurnProgramResolverForTests(null);
+    }
+  }
 
-  const q96Conversation = await api.createConversation();
-  const q96 = await api.sendConversationMessage(
-    q96Conversation.conversation_id,
+  const conversation = await api.createConversation();
+  const initial = await api.sendConversationMessage(
+    conversation.conversation_id,
     "q96 Vietnam Cambodia Malaysia Myanmar mean W3-W4",
-    q96Conversation.revision,
+    conversation.revision,
   );
-  const expanded = await api.sendConversationMessage(
-    q96Conversation.conversation_id,
-    "我还要看韩国和日本的数据",
-    q96.revision,
-  );
-  assert.equal(expanded.status, "answered");
-  assert.equal(expanded.active_snapshot?.view.question_id, "q96");
-  assert.equal(expanded.active_snapshot?.view.statistic, "mean");
-  assert.deepEqual(expanded.active_snapshot?.draft.countries, [1, 3, 11, 12, 13, 14]);
+  setCloudTurnProgramResolverForTests(async () => ({
+    schema_version: 1,
+    relation: "revise",
+    commands: [{
+      kind: "modify_countries",
+      operation: "add",
+      values: ["South Korea", "Japan"],
+      selector: "explicit",
+    }],
+    unresolved: [],
+    source: "model",
+  }));
+  try {
+    const expanded = await api.sendConversationMessage(
+      conversation.conversation_id,
+      "把日韩也纳入这份比较",
+      initial.revision,
+    );
+    assert.equal(expanded.status, "answered");
+    assert.equal(expanded.active_snapshot?.view.question_id, "q96");
+    assert.equal(expanded.active_snapshot?.view.statistic, "mean");
+    assert.deepEqual(expanded.active_snapshot?.draft.countries, [1, 3, 11, 12, 13, 14]);
+  } finally {
+    setCloudTurnProgramResolverForTests(null);
+  }
+});
+
+test("model search semantics and grounded scope survive every clarification step", async () => {
+  setCloudTurnProgramResolverForTests(async (context) => ({
+    schema_version: 1,
+    relation: "start",
+    commands: [{
+      kind: "search_questions",
+      purpose: "analyze",
+      query_original: context.latest_message,
+      query_en: "extent of democracy",
+      object_entities: [],
+    }],
+    unresolved: [],
+    source: "model",
+  }));
+  try {
+    const conversation = await api.createConversation();
+    const question = await api.sendConversationMessage(
+      conversation.conversation_id,
+      "日本的民主程度在各波平均值",
+      conversation.revision,
+    );
+    const q96 = question.options.find((option) => option.value === "q96");
+    assert.ok(q96);
+    const result = await api.sendConversationMessage(
+      conversation.conversation_id,
+      q96.label,
+      question.revision,
+    );
+    assert.equal(result.status, "answered");
+    assert.equal(result.active_snapshot?.view.question_id, "q96");
+    assert.equal(result.active_snapshot?.view.statistic, "mean");
+    assert.deepEqual(result.active_snapshot?.draft.countries, [1]);
+    assert.deepEqual(result.active_snapshot?.draft.waves, [1, 2, 3, 4, 5, 6]);
+  } finally {
+    setCloudTurnProgramResolverForTests(null);
+  }
+
+  setCloudTurnProgramResolverForTests(async (context) => ({
+    schema_version: 1,
+    relation: "discover",
+    commands: [{
+      kind: "search_questions",
+      purpose: "discover",
+      query_original: context.latest_message,
+      query_en: "satisfaction with democracy",
+      object_entities: [],
+    }],
+    unresolved: [],
+    source: "model",
+  }));
+  try {
+    const conversation = await api.createConversation();
+    const question = await api.sendConversationMessage(
+      conversation.conversation_id,
+      "我要看各国对于本国民主的满意度",
+      conversation.revision,
+    );
+    const q95 = question.options.find((option) => option.value === "q95");
+    assert.ok(q95);
+    const statistic = await api.sendConversationMessage(
+      conversation.conversation_id,
+      q95.label,
+      question.revision,
+    );
+    assert.equal(statistic.pending?.kind, "statistic");
+    const distribution = statistic.options.find((option) => option.value === "distribution");
+    assert.ok(distribution);
+    const wave = await api.sendConversationMessage(
+      conversation.conversation_id,
+      distribution.label,
+      statistic.revision,
+    );
+    assert.equal(wave.pending?.kind, "wave");
+    const allWaves = wave.options.find((option) => option.value === "all");
+    assert.ok(allWaves);
+    const result = await api.sendConversationMessage(
+      conversation.conversation_id,
+      allWaves.label,
+      wave.revision,
+    );
+    assert.equal(result.status, "answered");
+    assert.equal(result.active_snapshot?.view.question_id, "q95");
+    assert.equal(result.active_snapshot?.view.statistic, "distribution");
+    assert.equal(result.active_snapshot?.draft.countries.length, 18);
+  } finally {
+    setCloudTurnProgramResolverForTests(null);
+  }
 });
 
 test("assistant rejects explicit United States respondent wording", async () => {

@@ -18,6 +18,7 @@ import type {
   ConversationSnapshot,
   ConversationSuggestion,
   ConversationTurn,
+  CloudTurnContext,
   DimensionValue,
   Draft,
   Mode,
@@ -27,8 +28,13 @@ import type {
   ResultMetadata,
   ResultRow,
   StatisticalView,
+  TurnProgram,
 } from "./types";
 import { localAssistantStatus, maybeRerankQuestions } from "./question-rerank";
+import {
+  canRequestCloudTurnProgram,
+  requestCloudTurnProgram,
+} from "./cloud-turn-program";
 
 interface StaticResponseSetCatalog {
   id: string;
@@ -240,6 +246,9 @@ const COUNTRY_NAMES = new Map<number, string>([
   [19, "Bangladesh"],
   [20, "Sri Lanka"],
 ]);
+const COUNTRY_CODES = new Map(
+  [...COUNTRY_NAMES].map(([code, name]) => [name, code]),
+);
 
 const UNSUPPORTED_RESPONDENT_COUNTRIES: Array<[string, RegExp]> = [
   [
@@ -1049,7 +1058,7 @@ function parseCountries(message: string): {
   const remove = /(?:remove|exclude|drop|without|刪除|删除|移除|排除|不要)/iu.test(
     normalized,
   );
-  const add = /(?:add|include|plus|also|增加|新增|加入|加上|也看|再加|還要看|还要看|還要|还要)/iu.test(
+  const add = /(?:add|include|plus|also|增加|新增|加入|加上|也看|再加)/iu.test(
     normalized,
   );
   const all = ALL_COUNTRIES_PATTERN.test(normalized);
@@ -1588,7 +1597,7 @@ function operationalRemainder(message: string): string {
       " ",
     )
     .replace(
-      /(?:我只要看|只要看|我還要看|我还要看|還要看|还要看|增加|新增|加入|加上|再加|刪除|删除|移除|排除|不要|改看|改成|換成|换成|切換|切换|只看|僅看|仅看|也看|還要|还要|只要|資料|资料|數據|数据|結果|结果|受訪者|受访者|樣本|样本|請|请|幫我|帮我|我要|我想|想看|看看|查看|那|呢|再|並且|并且|以及|和|與|与|或|的|一下)/gu,
+      /(?:增加|新增|加入|加上|再加|刪除|删除|移除|排除|不要|改看|改成|換成|换成|切換|切换|只看|僅看|仅看|也看|資料|资料|數據|数据|結果|结果|受訪者|受访者|樣本|样本|請|请|幫我|帮我|我要|我想|想看|看看|查看|那|呢|再|並且|并且|以及|和|與|与|或|的|一下)/gu,
       " ",
     )
     .replace(/[^\p{L}\p{N}.]+/gu, " ")
@@ -1646,6 +1655,385 @@ function applyConversationModifiers(
   }
 }
 
+function normalizedChoice(value: string): string {
+  return value.normalize("NFKC").trim().toLowerCase();
+}
+
+function exactPendingOption(
+  state: ConversationState,
+  message: string,
+): ConversationOption | null {
+  if (!state.pending) return null;
+  const selected = normalizedChoice(message);
+  const matches = state.options.filter((option) => {
+    const candidates = [option.option_id, option.value, option.label];
+    return candidates.some((candidate) => normalizedChoice(candidate) === selected);
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function representationFromStatistic(statistic: Statistic | null): Mode | null {
+  if (!statistic) return null;
+  if (statistic === "mean" || statistic === "sd") return "continuous";
+  if (statistic === "median" || statistic === "quartiles") return "order";
+  return "category";
+}
+
+async function cloudTurnContext(
+  state: ConversationState,
+  latestMessage: string,
+  data: Bootstrap,
+): Promise<CloudTurnContext> {
+  const questionItem = state.plan.questionId
+    ? data.questions.find((item) => item.variable_id === state.plan.questionId) ?? null
+    : null;
+  const detail = questionItem ? await question(questionItem.variable_id) : null;
+  const categoryOptions = detail
+    ? [...new Set(
+        detail.scale
+          .filter((item) => item.category_status === "included")
+          .map((item) => item.category_label),
+      )]
+    : [];
+  const hasGoal = Boolean(
+    questionItem
+    || state.plan.countries.length
+    || state.plan.waves.length
+    || state.plan.statistic,
+  );
+  const priorEffectiveChange = Boolean(
+    state.previousPlan
+    && (
+      state.previousPlan.questionId !== state.plan.questionId
+      || state.previousPlan.statistic !== state.plan.statistic
+      || state.previousPlan.countries.join(",") !== state.plan.countries.join(",")
+      || state.previousPlan.waves.join(",") !== state.plan.waves.join(",")
+    ),
+  );
+  return {
+    latest_message: latestMessage,
+    current_goal: hasGoal
+      ? {
+          question_id: questionItem?.variable_id ?? null,
+          question_text: questionItem?.question_text ?? null,
+          respondent_countries: state.plan.countries
+            .map((code) => COUNTRY_NAMES.get(code))
+            .filter((name): name is string => Boolean(name)),
+          country_codes: [...state.plan.countries],
+          waves: [...state.plan.waves],
+          statistic: state.plan.statistic,
+          representation: state.activeSnapshot?.view.representation
+            ?? representationFromStatistic(state.plan.statistic),
+          category_options: categoryOptions,
+          selected_category_labels: [],
+        }
+      : null,
+    pending: state.pending
+      ? {
+          pending_id: state.pending.pending_id,
+          kind: state.pending.kind,
+          assistant_question: state.pending.question,
+          allowed_options: state.options.map((option) => ({
+            option_id: option.option_id,
+            label: option.label,
+            value: option.value,
+            description: option.description,
+          })),
+        }
+      : null,
+    recent_exchanges: state.turns
+      .slice(0, -1)
+      .slice(-8)
+      .map((turn) => ({ role: turn.role, content: turn.message })),
+    prior_effective_change: priorEffectiveChange,
+    turn_mode: state.turns.filter((turn) => turn.role === "user").length > 1
+      ? "continue"
+      : "start",
+  };
+}
+
+function cloudProgramFailure(
+  state: ConversationState,
+  message = "雲端語言服務目前無法可靠判讀這句話；既有分析沒有被修改。你仍可使用畫面上的選項，或稍後重試。",
+): ConversationResponse {
+  addTurn(state, "assistant", message);
+  return publicConversation(state, "tool_error", "tool_error", message);
+}
+
+function unresolvedProgram(
+  state: ConversationState,
+  program: TurnProgram,
+): ConversationResponse {
+  const detail = program.unresolved.map((item) => item.detail).join("；");
+  const message = detail
+    ? `這項調整仍有不明確之處：${detail}。既有分析沒有被修改。`
+    : "這項要求目前無法安全地對應到既有分析；請再說明要改題目、國家、波次或統計量。";
+  addTurn(state, "assistant", message);
+  return publicConversation(state, "needs_clarification", "clarified", message);
+}
+
+function waveValuesForCommand(
+  command: Extract<ConversationCommand, { kind: "modify_waves" }>,
+  current: number[],
+  available: number[],
+): number[] {
+  const sorted = [...new Set(available)].sort((a, b) => a - b);
+  if (command.selector === "explicit") return command.values ?? [];
+  if (command.selector === "from_wave") {
+    const endpoint = command.values?.[0];
+    return endpoint ? sorted.filter((wave) => wave >= endpoint) : [];
+  }
+  if (command.selector === "through") {
+    const endpoint = command.values?.[0];
+    return endpoint ? sorted.filter((wave) => wave <= endpoint) : [];
+  }
+  if (command.selector === "through_latest") {
+    const start = current.length ? Math.min(...current) : sorted[0];
+    return start ? sorted.filter((wave) => wave >= start) : [];
+  }
+  if (command.selector === "ensure_multiple") {
+    return current.length >= 2 ? current : sorted.slice(-2);
+  }
+  if (command.selector === "all_available") return sorted;
+  if (command.selector === "all_six") return [1, 2, 3, 4, 5, 6];
+  if (command.selector === "earliest") return sorted.slice(0, 1);
+  if (command.selector === "earliest_three") return sorted.slice(0, 3);
+  if (command.selector === "latest") return sorted.slice(-1);
+  if (command.selector === "latest_two") return sorted.slice(-2);
+  if (command.selector === "latest_three") return sorted.slice(-3);
+  if (command.selector === "previous") {
+    const first = current.length ? Math.min(...current) : Number.POSITIVE_INFINITY;
+    return sorted.filter((wave) => wave < first).slice(-1);
+  }
+  return [];
+}
+
+function supplementSearchScope(
+  program: TurnProgram,
+  message: string,
+): TurnProgram {
+  if (!program.commands.some((command) => command.kind === "search_questions")) {
+    return program;
+  }
+  const commands = [...program.commands];
+  const countries = parseCountries(message);
+  const waves = parseWaves(message);
+  const statistic = parseStatistic(message);
+  if (
+    !commands.some((command) => command.kind === "modify_countries")
+    && (countries.all || countries.values.length)
+    && commands.length < 6
+  ) {
+    commands.push({
+      kind: "modify_countries",
+      operation: countries.all ? "set" : countries.operation,
+      values: countries.all
+        ? []
+        : countries.values
+            .map((code) => COUNTRY_NAMES.get(code))
+            .filter((name): name is string => Boolean(name)),
+      selector: countries.all ? "all_available" : "explicit",
+    });
+  }
+  if (
+    !commands.some((command) => command.kind === "modify_waves")
+    && (waves.all || waves.values.length)
+    && commands.length < 6
+  ) {
+    commands.push({
+      kind: "modify_waves",
+      operation: waves.all ? "set" : waves.operation,
+      values: waves.all ? [] : waves.values,
+      selector: waves.all ? "all_available" : "explicit",
+    });
+  }
+  if (
+    statistic
+    && !commands.some((command) => command.kind === "set_statistic")
+    && commands.length < 6
+  ) {
+    commands.push({ kind: "set_statistic", statistic });
+  }
+  return { ...program, commands };
+}
+
+async function applyCloudTurnProgram(
+  state: ConversationState,
+  program: TurnProgram,
+  data: Bootstrap,
+): Promise<ConversationResponse> {
+  if (program.relation === "unclear" || program.unresolved.length) {
+    return unresolvedProgram(state, program);
+  }
+  const social = program.commands.find(
+    (command): command is Extract<ConversationCommand, { kind: "social" }> => command.kind === "social",
+  );
+  if (social) {
+    const reply = social.operation === "close"
+      ? "好的，這次分析先到這裡。"
+      : "不客氣。你可以繼續調整統計量、國家、波次，或提出新的調查主題。";
+    addTurn(state, "assistant", reply);
+    const detail = state.plan.questionId ? await question(state.plan.questionId) : null;
+    return publicConversation(state, "answered", "acknowledged", reply, detail ? suggestionsFor(state, detail) : []);
+  }
+  const repair = program.commands.find(
+    (command): command is Extract<ConversationCommand, { kind: "repair" }> => command.kind === "repair",
+  );
+  if (repair) {
+    if (repair.operation === "restart_question") {
+      state.previousPlan = clonePlan(state.plan);
+      state.plan = { questionId: null, statistic: null, countries: [], waves: [] };
+      state.questionQuery = null;
+      state.activeSnapshot = null;
+      state.pending = null;
+      state.options = [];
+      const reply = "已開始新問題。";
+      addTurn(state, "assistant", reply, null, "flow_boundary");
+      return publicConversation(state, "answered", "discussed", reply);
+    }
+    if (repair.operation === "cancel_pending") {
+      state.pending = null;
+      state.options = [];
+      const reply = "已取消目前的澄清；既有分析結果沒有被修改。";
+      addTurn(state, "assistant", reply);
+      return publicConversation(state, "answered", "acknowledged", reply);
+    }
+    if (state.previousPlan) {
+      const current = clonePlan(state.plan);
+      state.plan = clonePlan(state.previousPlan);
+      state.previousPlan = current;
+      return answerPlan(state, "revised");
+    }
+    return unresolvedProgram(state, {
+      ...program,
+      commands: [],
+      relation: "unclear",
+      unresolved: [{ slot: "other", detail: "目前沒有可復原的上一項變更" }],
+    });
+  }
+  const pendingSelection = program.commands.find(
+    (command): command is Extract<ConversationCommand, { kind: "select_pending_option" }> => command.kind === "select_pending_option",
+  );
+  if (pendingSelection) {
+    const option = state.options.find((candidate) => candidate.option_id === pendingSelection.option_id);
+    if (!option || pendingSelection.pending_id !== state.pending?.pending_id) return cloudProgramFailure(state);
+    state.previousPlan = clonePlan(state.plan);
+    return selectPendingOption(state, option);
+  }
+  const discussion = program.commands.find(
+    (command): command is Extract<ConversationCommand, { kind: "discuss_result" }> => command.kind === "discuss_result",
+  );
+  if (program.relation === "discuss" || discussion) {
+    const reply = state.activeSnapshot
+      ? "目前結果仍維持不變。圖表的未納入範圍與樣本基數可在結果说明中查看；若要改分析，请明确指定题目、国家、波次或统计量。"
+      : "目前還沒有可討論的分析結果；請先指定調查題目與分析範圍。";
+    addTurn(state, "assistant", reply);
+    return publicConversation(state, "answered", "discussed", reply);
+  }
+  if (program.commands.some((command) => command.kind === "modify_categories")) {
+    return cloudProgramFailure(
+      state,
+      "雲端備援目前不能安全修改回答類別；既有分析沒有被修改。請先使用結果頁面的類別控制項。",
+    );
+  }
+
+  const original = clonePlan(state.plan);
+  let next = clonePlan(state.plan);
+  const searchCommand = program.commands.find(
+    (command): command is Extract<ConversationCommand, { kind: "search_questions" }> => command.kind === "search_questions",
+  );
+  const selectQuestionCommand = program.commands.find(
+    (command): command is Extract<ConversationCommand, { kind: "select_question" }> => command.kind === "select_question",
+  );
+  if (searchCommand) {
+    next = { questionId: null, statistic: null, countries: [], waves: [] };
+  } else if (program.relation === "start" && selectQuestionCommand) {
+    next = { questionId: null, statistic: null, countries: [], waves: [] };
+  }
+  if (selectQuestionCommand) {
+    const selected = data.questions.find(
+      (item) => item.variable_id.toLowerCase() === selectQuestionCommand.question_id.toLowerCase(),
+    );
+    if (!selected) return unresolvedProgram(state, {
+      ...program,
+      commands: [],
+      relation: "unclear",
+      unresolved: [{ slot: "question", detail: "指定的題號不在目前資料版本中" }],
+    });
+    next.questionId = selected.variable_id;
+  }
+  for (const command of program.commands) {
+    if (command.kind === "modify_countries") {
+      const values = command.selector === "all_available"
+        ? data.countries.map((country) => country.country_code)
+        : (command.values ?? [])
+            .map((country) => COUNTRY_CODES.get(country))
+            .filter((code): code is number => typeof code === "number");
+      next.countries = applyListChange(next.countries, command.operation, values);
+    }
+    if (command.kind === "modify_waves") {
+      const available = data.questions.find(
+        (item) => item.variable_id === next.questionId,
+      )?.waves ?? data.waves;
+      next.waves = applyListChange(
+        next.waves,
+        command.operation,
+        waveValuesForCommand(command, next.waves, available),
+      );
+    }
+    if (command.kind === "set_statistic") next.statistic = command.statistic;
+    if (command.kind === "set_representation") {
+      next.statistic = command.representation === "continuous"
+        ? "mean"
+        : command.representation === "order"
+          ? "median"
+          : "distribution";
+    }
+  }
+
+  state.previousPlan = original;
+  state.plan = next;
+  if (searchCommand) {
+    const semanticQuery = [searchCommand.query_original, searchCommand.query_en]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join("\n");
+    state.questionQuery = semanticQuery;
+    state.activeSnapshot = null;
+    const matches = (await catalogSearch(semanticQuery)).questions;
+    if (!matches.length) {
+      const reply = "目前找不到符合這個概念的題目；請提供題號或更完整的題目文字。";
+      addTurn(state, "assistant", reply);
+      return publicConversation(state, "unsupported", "unsupported", reply);
+    }
+    setPending(
+      state,
+      "question",
+      "請選擇最符合需求的調查題目。",
+      ["question"],
+      questionOptions(matches),
+    );
+    const reply = "這個說法可能對應不同的測量。請選擇題目：";
+    addTurn(state, "assistant", reply);
+    return publicConversation(state, "needs_clarification", "clarified", reply);
+  }
+  if (selectQuestionCommand) {
+    state.questionQuery = null;
+    state.pending = null;
+    state.options = [];
+  }
+  if (!state.plan.questionId && state.pending?.kind === "question") {
+    const reply = "已記錄這項分析條件；請繼續選擇最符合需求的調查題目。";
+    addTurn(state, "assistant", reply);
+    return publicConversation(state, "needs_clarification", "clarified", reply);
+  }
+  if (!state.plan.questionId) {
+    const reply = "已記錄分析條件；請再說明要分析的調查主題或題目。";
+    addTurn(state, "assistant", reply);
+    return publicConversation(state, "needs_clarification", "clarified", reply);
+  }
+  return answerPlan(state, state.activeSnapshot ? "revised" : "analyzed");
+}
+
 async function sendConversationMessage(
   conversationId: string,
   message: string,
@@ -1659,6 +2047,22 @@ async function sendConversationMessage(
   state.revision += 1;
   addTurn(state, "user", message);
   const trimmed = message.trim();
+  const displayedOption = exactPendingOption(state, trimmed);
+  if (displayedOption) {
+    state.previousPlan = clonePlan(state.plan);
+    return selectPendingOption(state, displayedOption);
+  }
+  if (canRequestCloudTurnProgram()) {
+    const data = await bootstrap();
+    const context = await cloudTurnContext(state, trimmed, data);
+    const program = await requestCloudTurnProgram(context);
+    if (!program) return cloudProgramFailure(state);
+    return applyCloudTurnProgram(
+      state,
+      supplementSearchScope(program, trimmed),
+      data,
+    );
+  }
   if (/^(?:thanks?|thank you|謝謝|谢谢|好的|好)$/iu.test(trimmed)) {
     state.pending = null;
     state.options = [];
