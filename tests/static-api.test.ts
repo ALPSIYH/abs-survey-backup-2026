@@ -697,6 +697,40 @@ test("assistant treats English switch-to phrases as scope changes", async () => 
   assert.deepEqual(waves.active_snapshot?.draft.waves, [1, 2, 3, 4, 5, 6]);
 });
 
+test("country-only Chinese follow-ups preserve the current q95 and q96 analyses", async () => {
+  const q95Conversation = await api.createConversation();
+  const q95 = await api.sendConversationMessage(
+    q95Conversation.conversation_id,
+    "q95 全部国家 回答分布 全部可用波次",
+    q95Conversation.revision,
+  );
+  const restricted = await api.sendConversationMessage(
+    q95Conversation.conversation_id,
+    "我只要看日本和韩国的",
+    q95.revision,
+  );
+  assert.equal(restricted.status, "answered");
+  assert.equal(restricted.active_snapshot?.view.question_id, "q95");
+  assert.equal(restricted.active_snapshot?.view.statistic, "distribution");
+  assert.deepEqual(restricted.active_snapshot?.draft.countries, [1, 3]);
+
+  const q96Conversation = await api.createConversation();
+  const q96 = await api.sendConversationMessage(
+    q96Conversation.conversation_id,
+    "q96 Vietnam Cambodia Malaysia Myanmar mean W3-W4",
+    q96Conversation.revision,
+  );
+  const expanded = await api.sendConversationMessage(
+    q96Conversation.conversation_id,
+    "我还要看韩国和日本的数据",
+    q96.revision,
+  );
+  assert.equal(expanded.status, "answered");
+  assert.equal(expanded.active_snapshot?.view.question_id, "q96");
+  assert.equal(expanded.active_snapshot?.view.statistic, "mean");
+  assert.deepEqual(expanded.active_snapshot?.draft.countries, [1, 3, 11, 12, 13, 14]);
+});
+
 test("assistant rejects explicit United States respondent wording", async () => {
   for (const prompt of ["美國受訪者", "我要看美國的受訪者資料"]) {
     const conversation = await api.createConversation();

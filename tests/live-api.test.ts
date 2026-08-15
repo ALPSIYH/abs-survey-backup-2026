@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { api } from "../app/live-api";
-import { bridgeMatchesEmbeddedContract, bridgeMatchesEmbeddedRelease } from "../app/hybrid-api";
+import {
+  bridgeMatchesEmbeddedContract,
+  bridgeMatchesEmbeddedRelease,
+  outageConfirmedAfterChecks,
+} from "../app/hybrid-api";
 
 
 test("live client uses the shared versioned API instead of packaged calculations", async () => {
@@ -98,4 +102,24 @@ test("bridge contract must contain the exact governed logical question identifie
     questions: [{ variable_id: "q99" }],
     response_sets: [{ response_set_id: "organization_membership" }],
   }, embedded), false);
+});
+
+test("cloud takeover requires two consecutive local availability failures", async () => {
+  const recoveredChecks = [false, true];
+  assert.equal(
+    await outageConfirmedAfterChecks(
+      async () => recoveredChecks.shift() ?? false,
+      async () => undefined,
+    ),
+    false,
+  );
+
+  const failedChecks = [false, false];
+  assert.equal(
+    await outageConfirmedAfterChecks(
+      async () => failedChecks.shift() ?? false,
+      async () => undefined,
+    ),
+    true,
+  );
 });

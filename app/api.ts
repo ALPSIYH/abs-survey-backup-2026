@@ -1049,7 +1049,7 @@ function parseCountries(message: string): {
   const remove = /(?:remove|exclude|drop|without|刪除|删除|移除|排除|不要)/iu.test(
     normalized,
   );
-  const add = /(?:add|include|plus|also|增加|新增|加入|加上|也看|再加)/iu.test(
+  const add = /(?:add|include|plus|also|增加|新增|加入|加上|也看|再加|還要看|还要看|還要|还要)/iu.test(
     normalized,
   );
   const all = ALL_COUNTRIES_PATTERN.test(normalized);
@@ -1588,7 +1588,7 @@ function operationalRemainder(message: string): string {
       " ",
     )
     .replace(
-      /(?:增加|新增|加入|加上|再加|刪除|删除|移除|排除|不要|改看|改成|換成|换成|切換|切换|只看|僅看|仅看|也看|資料|资料|數據|数据|結果|结果|受訪者|受访者|樣本|样本|請|请|幫我|帮我|我要|我想|想看|看看|查看|那|呢|再|並且|并且|以及|和|與|与|或|的|一下)/gu,
+      /(?:我只要看|只要看|我還要看|我还要看|還要看|还要看|增加|新增|加入|加上|再加|刪除|删除|移除|排除|不要|改看|改成|換成|换成|切換|切换|只看|僅看|仅看|也看|還要|还要|只要|資料|资料|數據|数据|結果|结果|受訪者|受访者|樣本|样本|請|请|幫我|帮我|我要|我想|想看|看看|查看|那|呢|再|並且|并且|以及|和|與|与|或|的|一下)/gu,
       " ",
     )
     .replace(/[^\p{L}\p{N}.]+/gu, " ")

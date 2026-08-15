@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const HEALTH_TIMEOUT_MS = 2_500;
-const OPERATION_TIMEOUT_MS = 20_000;
+const HEALTH_TIMEOUT_MS = 5_000;
+const OPERATION_TIMEOUT_MS = 75_000;
 const MAX_BODY_BYTES = 128_000;
 
 function liveApiOrigin(): URL | null {

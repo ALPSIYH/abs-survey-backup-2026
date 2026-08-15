@@ -22,8 +22,10 @@ interface BridgeBootstrap {
   response_sets?: Array<{ response_set_id?: unknown }>;
 }
 
-const HEALTH_TIMEOUT_MS = 2_500;
+const HEALTH_TIMEOUT_MS = 8_000;
 const BRIDGE_RECHECK_MS = 10_000;
+const BRIDGE_CONFIRMATION_DELAY_MS = 600;
+const BRIDGE_CONFIRMATION_ATTEMPTS = 2;
 let bridgeAvailabilityPromise: Promise<boolean> | null = null;
 let bridgeAvailability = { value: false, expiresAt: 0 };
 type ConversationRoute = "local" | "cloud";
@@ -109,15 +111,17 @@ export function bridgeMatchesEmbeddedContract(
 
 async function probeBridge(): Promise<boolean> {
   if (typeof window === "undefined") return false;
-  const [health, live, embedded] = await Promise.all([
-    bridgeHealth(),
-    bridgeBootstrap(),
-    staticApi.bootstrap(),
-  ]);
+  const embedded = await staticApi.bootstrap();
+  const health = await bridgeHealth();
+  if (!bridgeMatchesEmbeddedRelease(health, embedded.dataset)) return false;
+  const live = await bridgeBootstrap();
   return (
-    bridgeMatchesEmbeddedRelease(health, embedded.dataset)
-    && bridgeMatchesEmbeddedContract(live, embedded)
+    bridgeMatchesEmbeddedContract(live, embedded)
   );
+}
+
+function rememberBridgeAvailability(value: boolean): void {
+  bridgeAvailability = { value, expiresAt: Date.now() + BRIDGE_RECHECK_MS };
 }
 
 async function bridgeAvailable(): Promise<boolean> {
@@ -127,7 +131,7 @@ async function bridgeAvailable(): Promise<boolean> {
     bridgeAvailabilityPromise = probeBridge()
       .catch(() => false)
       .then((value) => {
-        bridgeAvailability = { value, expiresAt: Date.now() + BRIDGE_RECHECK_MS };
+        rememberBridgeAvailability(value);
         bridgeAvailabilityPromise = null;
         return value;
       });
@@ -137,6 +141,49 @@ async function bridgeAvailable(): Promise<boolean> {
 
 function invalidateBridge(): void {
   bridgeAvailability = { value: false, expiresAt: 0 };
+}
+
+async function waitForBridgeConfirmation(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    window.setTimeout(resolve, BRIDGE_CONFIRMATION_DELAY_MS);
+  });
+}
+
+export async function outageConfirmedAfterChecks(
+  checkAvailable: () => Promise<boolean>,
+  pause: () => Promise<void> = waitForBridgeConfirmation,
+): Promise<boolean> {
+  for (let attempt = 0; attempt < BRIDGE_CONFIRMATION_ATTEMPTS; attempt += 1) {
+    try {
+      if (await checkAvailable()) return false;
+    } catch {
+      // A failed check counts as unavailable, but one failure never triggers takeover.
+    }
+    if (attempt + 1 < BRIDGE_CONFIRMATION_ATTEMPTS) await pause();
+  }
+  return true;
+}
+
+async function bridgeReleaseAvailable(): Promise<boolean> {
+  const [health, embedded] = await Promise.all([
+    bridgeHealth(),
+    staticApi.bootstrap(),
+  ]);
+  return bridgeMatchesEmbeddedRelease(health, embedded.dataset);
+}
+
+async function confirmBridgeUnavailable(): Promise<boolean> {
+  const unavailable = await outageConfirmedAfterChecks(bridgeReleaseAvailable);
+  rememberBridgeAvailability(!unavailable);
+  return unavailable;
+}
+
+async function bridgeAvailableWithGrace(): Promise<boolean> {
+  if (await bridgeAvailable()) return true;
+  await waitForBridgeConfirmation();
+  const available = await probeBridge().catch(() => false);
+  rememberBridgeAvailability(available);
+  return available;
 }
 
 async function preferLocalV82<T>(
@@ -155,7 +202,7 @@ async function preferLocalV82<T>(
 }
 
 async function createConversation() {
-  if (await bridgeAvailable()) {
+  if (await bridgeAvailableWithGrace()) {
     try {
       const response: ConversationResponse = {
         ...await liveApi.createConversation(),
@@ -167,6 +214,7 @@ async function createConversation() {
     } catch (reason) {
       if (!isRetryableLiveApiError(reason)) throw reason;
       invalidateBridge();
+      if (!(await confirmBridgeUnavailable())) throw reason;
     }
   }
   const response: ConversationResponse = {
@@ -196,6 +244,7 @@ async function continueConversation(
   } catch (reason) {
     if (!isRetryableLiveApiError(reason)) throw reason;
     invalidateBridge();
+    if (!(await confirmBridgeUnavailable())) throw reason;
     const mirror = conversationMirrors.get(conversationId);
     if (!mirror) {
       throw new Error("The conversation could not be recovered after the local connection was interrupted.");

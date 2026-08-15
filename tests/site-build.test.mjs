@@ -71,6 +71,8 @@ test("continues an interrupted local conversation in sticky cloud mode", async (
   assert.match(hybrid, /conversationMirrors/u);
   assert.match(hybrid, /staticApi\.importConversation\(mirror\)/u);
   assert.match(hybrid, /conversationRoutes\.set\(conversationId, "cloud"\)/u);
+  assert.match(hybrid, /confirmBridgeUnavailable/u);
+  assert.match(hybrid, /BRIDGE_CONFIRMATION_ATTEMPTS = 2/u);
   assert.doesNotMatch(hybrid, /LocalConversationUnavailableError/u);
 });
 
@@ -79,6 +81,15 @@ test("only retryable local service failures can use a fallback", async () => {
   const hybrid = await readFile(new URL("../app/hybrid-api.ts", import.meta.url), "utf8");
   assert.match(live, /new Set\(\[502, 503, 504\]\)/u);
   assert.match(hybrid, /isRetryableLiveApiError/u);
+});
+
+test("local model operations have a longer bound than health probes", async () => {
+  const route = await readFile(
+    new URL("../app/api/v1/[...path]/route.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(route, /HEALTH_TIMEOUT_MS = 5_000/u);
+  assert.match(route, /OPERATION_TIMEOUT_MS = 75_000/u);
 });
 
 test("public deployment cannot invoke a model without a configured server secret", async () => {
