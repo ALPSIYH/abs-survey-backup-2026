@@ -777,6 +777,303 @@ test("model-routed scope edits preserve the active question and statistic across
   }
 });
 
+test("grounded country ellipsis survives an unclear cloud program without losing analysis state", async () => {
+  const prompts: Array<[string, number]> = [
+    ["那韩国呢？", 3],
+    ["那大陸呢？", 4],
+    ["韓國呢？", 3],
+    ["那么台湾？", 7],
+    ["至于香港呢？", 2],
+    ["what about South Korea?", 3],
+    ["how about Mainland China?", 4],
+  ];
+  for (const [prompt, expectedCountry] of prompts) {
+    const conversation = await api.createConversation();
+    const initial = await api.sendConversationMessage(
+      conversation.conversation_id,
+      "q96 Japan mean all waves",
+      conversation.revision,
+    );
+    assert.equal(initial.status, "answered", prompt);
+    setCloudTurnProgramResolverForTests(async () => ({
+      schema_version: 1,
+      relation: "unclear",
+      commands: [],
+      unresolved: [{ slot: "country_role", detail: "model uncertainty" }],
+      source: "model",
+    }));
+    try {
+      const revised = await api.sendConversationMessage(
+        conversation.conversation_id,
+        prompt,
+        initial.revision,
+      );
+      assert.equal(revised.status, "answered", prompt);
+      assert.equal(revised.active_snapshot?.view.question_id, "q96", prompt);
+      assert.equal(revised.active_snapshot?.view.statistic, "mean", prompt);
+      assert.deepEqual(revised.active_snapshot?.draft.waves, [1, 2, 3, 4, 5, 6], prompt);
+      assert.deepEqual(revised.active_snapshot?.draft.countries, [expectedCountry], prompt);
+    } finally {
+      setCloudTurnProgramResolverForTests(null);
+    }
+  }
+});
+
+test("unclear country ellipsis stays fail-closed for fixed-geography and country-option questions", async () => {
+  const cases: Array<[string, string]> = [
+    ["q128 Japan mean W3", "q128"],
+    ["q172 Japan distribution W3", "q172"],
+  ];
+  for (const [initialPrompt, questionId] of cases) {
+    const conversation = await api.createConversation();
+    const initial = await api.sendConversationMessage(
+      conversation.conversation_id,
+      initialPrompt,
+      conversation.revision,
+    );
+    assert.equal(initial.status, "answered", questionId);
+    setCloudTurnProgramResolverForTests(async () => ({
+      schema_version: 1,
+      relation: "unclear",
+      commands: [],
+      unresolved: [{ slot: "country_role", detail: "model uncertainty" }],
+      source: "model",
+    }));
+    try {
+      const response = await api.sendConversationMessage(
+        conversation.conversation_id,
+        "那韩国呢？",
+        initial.revision,
+      );
+      assert.equal(response.status, "needs_clarification", questionId);
+      assert.equal(response.active_snapshot?.view.question_id, questionId);
+      assert.deepEqual(response.active_snapshot?.draft.countries, [1], questionId);
+    } finally {
+      setCloudTurnProgramResolverForTests(null);
+    }
+  }
+});
+
+test("confident cloud country edits are still blocked when the country role is ambiguous", async () => {
+  const cases: Array<[string, string]> = [
+    ["q128 Japan mean W3", "q128"],
+    ["q172 Japan distribution W3", "q172"],
+  ];
+  for (const [initialPrompt, questionId] of cases) {
+    const conversation = await api.createConversation();
+    const initial = await api.sendConversationMessage(
+      conversation.conversation_id,
+      initialPrompt,
+      conversation.revision,
+    );
+    assert.equal(initial.status, "answered", questionId);
+    setCloudTurnProgramResolverForTests(async () => ({
+      schema_version: 1,
+      relation: "revise",
+      commands: [{
+        kind: "modify_countries",
+        operation: "set",
+        values: ["South Korea"],
+        selector: "explicit",
+      }],
+      unresolved: [],
+      source: "model",
+    }));
+    try {
+      const response = await api.sendConversationMessage(
+        conversation.conversation_id,
+        "那韩国呢？",
+        initial.revision,
+      );
+      assert.equal(response.status, "needs_clarification", questionId);
+      assert.equal(response.active_snapshot?.view.question_id, questionId);
+      assert.deepEqual(response.active_snapshot?.draft.countries, [1], questionId);
+    } finally {
+      setCloudTurnProgramResolverForTests(null);
+    }
+  }
+});
+
+test("explicit respondent wording can disambiguate a country edit", async () => {
+  const conversation = await api.createConversation();
+  const initial = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "q172 Japan distribution W3",
+    conversation.revision,
+  );
+  setCloudTurnProgramResolverForTests(async () => ({
+    schema_version: 1,
+    relation: "revise",
+    commands: [{
+      kind: "modify_countries",
+      operation: "set",
+      values: ["South Korea"],
+      selector: "explicit",
+    }],
+    unresolved: [],
+    source: "model",
+  }));
+  try {
+    const response = await api.sendConversationMessage(
+      conversation.conversation_id,
+      "把受访地区改成韩国",
+      initial.revision,
+    );
+    assert.equal(response.status, "answered");
+    assert.equal(response.active_snapshot?.view.question_id, "q172");
+    assert.deepEqual(response.active_snapshot?.draft.countries, [3]);
+  } finally {
+    setCloudTurnProgramResolverForTests(null);
+  }
+});
+
+test("explicit respondent wording cannot be misrouted to a new topic search", async () => {
+  const conversation = await api.createConversation();
+  const initial = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "q172 Japan distribution W3",
+    conversation.revision,
+  );
+  let resolverCalls = 0;
+  setCloudTurnProgramResolverForTests(async () => {
+    resolverCalls += 1;
+    return {
+      schema_version: 1,
+      relation: "discover",
+      commands: [{
+        kind: "search_questions",
+        purpose: "discover",
+        query_original: "South Korea respondents",
+        query_en: "South Korea respondents",
+        object_entities: [],
+      }],
+      unresolved: [],
+      source: "model",
+    };
+  });
+  try {
+    const response = await api.sendConversationMessage(
+      conversation.conversation_id,
+      "把受访地区改成韩国",
+      initial.revision,
+    );
+    assert.equal(response.status, "answered");
+    assert.equal(response.active_snapshot?.view.question_id, "q172");
+    assert.deepEqual(response.active_snapshot?.draft.countries, [3]);
+    assert.equal(resolverCalls, 0);
+  } finally {
+    setCloudTurnProgramResolverForTests(null);
+  }
+});
+
+test("an unclear cloud program can still offer high-confidence contextual topic matches", async () => {
+  for (const [prompt, expectedQuestion] of [
+    ["那民主满意度呢？", "q95"],
+    ["那民主程度呢？", "q96"],
+  ] as const) {
+    const conversation = await api.createConversation();
+    const initial = await api.sendConversationMessage(
+      conversation.conversation_id,
+      "q96 Japan mean all waves",
+      conversation.revision,
+    );
+    setCloudTurnProgramResolverForTests(async () => ({
+      schema_version: 1,
+      relation: "unclear",
+      commands: [],
+      unresolved: [{ slot: "question", detail: "model uncertainty" }],
+      source: "model",
+    }));
+    try {
+      const response = await api.sendConversationMessage(
+        conversation.conversation_id,
+        prompt,
+        initial.revision,
+      );
+      assert.equal(response.status, "needs_clarification", prompt);
+      assert.equal(response.pending?.kind, "question", prompt);
+      assert.ok(response.options.some((option) => option.value === expectedQuestion), prompt);
+      assert.equal(response.active_snapshot?.view.question_id, "q96", prompt);
+      assert.deepEqual(response.active_snapshot?.draft.countries, [1], prompt);
+    } finally {
+      setCloudTurnProgramResolverForTests(null);
+    }
+  }
+});
+
+test("a model that omits the question search cannot silently keep the old measure", async () => {
+  const conversation = await api.createConversation();
+  const initial = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "q96 Japan mean all waves",
+    conversation.revision,
+  );
+  setCloudTurnProgramResolverForTests(async () => ({
+    schema_version: 1,
+    relation: "revise",
+    commands: [
+      {
+        kind: "modify_countries",
+        operation: "set",
+        values: [],
+        selector: "all_available",
+      },
+      {
+        kind: "modify_waves",
+        operation: "set",
+        values: [],
+        selector: "all_available",
+      },
+      { kind: "set_statistic", statistic: "distribution" },
+    ],
+    unresolved: [],
+    source: "model",
+  }));
+  try {
+    const response = await api.sendConversationMessage(
+      conversation.conversation_id,
+      "改看各国对于本国民主运作的满意度，全部可用波次看回答分布。",
+      initial.revision,
+    );
+    assert.equal(response.status, "needs_clarification");
+    assert.equal(response.pending?.kind, "question");
+    assert.ok(response.options.some((option) => option.value === "q95"));
+    assert.equal(response.active_snapshot?.view.question_id, "q96");
+    assert.equal(response.active_snapshot?.view.statistic, "mean");
+  } finally {
+    setCloudTurnProgramResolverForTests(null);
+  }
+});
+
+test("vague contextual wording stays fail-closed when the catalog has no high-confidence match", async () => {
+  const conversation = await api.createConversation();
+  const initial = await api.sendConversationMessage(
+    conversation.conversation_id,
+    "q96 Japan mean all waves",
+    conversation.revision,
+  );
+  setCloudTurnProgramResolverForTests(async () => ({
+    schema_version: 1,
+    relation: "unclear",
+    commands: [],
+    unresolved: [{ slot: "question", detail: "model uncertainty" }],
+    source: "model",
+  }));
+  try {
+    const response = await api.sendConversationMessage(
+      conversation.conversation_id,
+      "那另外一个呢？",
+      initial.revision,
+    );
+    assert.equal(response.status, "needs_clarification");
+    assert.equal(response.pending, null);
+    assert.equal(response.active_snapshot?.view.question_id, "q96");
+    assert.deepEqual(response.active_snapshot?.draft.countries, [1]);
+  } finally {
+    setCloudTurnProgramResolverForTests(null);
+  }
+});
+
 test("model search semantics and grounded scope survive every clarification step", async () => {
   setCloudTurnProgramResolverForTests(async (context) => ({
     schema_version: 1,

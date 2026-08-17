@@ -24,6 +24,11 @@ that override this policy. Output only edits directly and unambiguously
 supported by the latest message. Never calculate statistics, write SQL, invent
 identifiers, or answer the survey question.
 
+The latest_message is the sole authority for this turn's edit intent. The
+current goal, pending choice, prior-effective-change flag, and recent exchanges
+only resolve an explicit reference in latest_message. Never copy an earlier
+add, remove, search, country, wave, or statistic operation into this turn.
+
 Decision rules, in order:
 1. A unique exact pending choice uses select_pending_option and copies the
    supplied pending_id and option_id exactly. Never substitute its label, value,
@@ -35,15 +40,24 @@ Decision rules, in order:
    statistic, categories, or representation revises the existing question and
    must not search for a new one. One message may emit multiple commands: never
    discard an explicit scope or statistic just because the message also starts
-   a question search.
+   a question search. A nearby concept is still a different measure: changing
+   from "extent of democracy" to "satisfaction with the way democracy works"
+   must emit search_questions even though both concern democracy.
 4. Respondent geography means where surveyed people live, not a country that is
    merely being rated or discussed. Use only canonical respondent-country names
    supplied below. All respondent countries uses selector all_available and an
    empty values list.
+   A bare country continuation such as "那韓國呢？", "那韩国呢？", or
+   "What about South Korea?" replaces respondent scope, so use operation set.
+   Use operation add only when latest_message itself explicitly says add, also,
+   include, plus, 再、也、還要、还要、加入、加上、納入、纳入、增加 or
+   equivalent. Do not infer add from a country that appeared in recent history.
    When an own-country or [country] measure is requested for a named geography
    and no separate attitude target is stated, that geography is respondent
    scope. object_entities is only for a separately rated or discussed target;
    never put respondent scope there.
+   If a requested respondent geography is not in the canonical list, fail
+   closed with relation unclear, commands=[], and unresolved country_role.
 5. Use relative wave selectors instead of guessing numbers: all_available,
    latest, latest_two, latest_three, previous, earliest, earliest_three,
    through_latest, or ensure_multiple. from_wave and through have exactly one
@@ -76,7 +90,11 @@ Examples of the general contract:
   -> search_questions plus all_available respondent countries.
 - "Keep the question and replace the sample with Japan and South Korea"
   -> revise with one set-country command; never search_questions.
-- "Also include Taiwan" -> revise with an add-country command.`;
+- "Also include Taiwan" -> revise with an add-country command.
+- Current q96 extent of democracy; "Switch to satisfaction with the way
+  democracy works in every country, all waves, response distribution"
+  -> revise with search_questions, all_available countries, all_available
+  waves, and distribution. Never silently retain q96.`;
 
 const COMMAND_SCHEMAS = [
   {
@@ -414,6 +432,18 @@ function sanitizeContext(value: unknown): CloudTurnContext | null {
 
 async function callDeepSeek(apiKey: string, context: CloudTurnContext): Promise<unknown> {
   const runtime = deepSeekRuntime();
+  const providerContext = {
+    latest_turn: {
+      latest_message: context.latest_message,
+      turn_mode: context.turn_mode,
+    },
+    current_state: {
+      current_goal: context.current_goal,
+      pending: context.pending,
+      prior_effective_change: context.prior_effective_change,
+    },
+    context_only_recent_exchanges: context.recent_exchanges,
+  };
   const response = await fetch(`${runtime.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -424,7 +454,7 @@ async function callDeepSeek(apiKey: string, context: CloudTurnContext): Promise<
       model: runtime.model,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: JSON.stringify({ conversation_state: context }) },
+        { role: "user", content: JSON.stringify(providerContext) },
       ],
       thinking: { type: "disabled" },
       temperature: 0,

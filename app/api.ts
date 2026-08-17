@@ -226,6 +226,14 @@ const COUNTRY_ALIASES: Array<[number, RegExp]> = [
   [20, /(?:\bsri\s*lanka(?:n)?\b|\bsrilanka(?:n)?\b|斯里蘭卡(?:人)?|斯里兰卡(?:人)?)/iu],
 ];
 
+const FIXED_QUESTION_GEOGRAPHY_PATTERNS: RegExp[] = [
+  ...COUNTRY_ALIASES.map(([, pattern]) => pattern),
+  /(?:\bunited\s+states\b|\bu\.?s\.?a?\.?\b|\bamerica(?:n)?\b|美國|美国)/iu,
+  /(?:\bchina\b|中國|中国)/iu,
+  /(?:\bnew\s+zealand\b|紐西蘭|纽西兰|新西蘭|新西兰)/iu,
+  /(?:\btimor[-\s]?leste\b|\beast\s+timor\b|東帝汶|东帝汶)/iu,
+];
+
 const COUNTRY_NAMES = new Map<number, string>([
   [1, "Japan"],
   [2, "Hong Kong"],
@@ -1593,11 +1601,15 @@ function operationalRemainder(message: string): string {
       " ",
     )
     .replace(
+      /\b(?:what|how)\s+about\b/giu,
+      " ",
+    )
+    .replace(
       /\b(?:add|include|remove|exclude|drop|without|plus|also|switch|change|set|only|just|instead|show|view|use|data|results?|respondents?|samples?|please|then|and|or|to|from|for|in)\b/giu,
       " ",
     )
     .replace(
-      /(?:增加|新增|加入|加上|再加|刪除|删除|移除|排除|不要|改看|改成|換成|换成|切換|切换|只看|僅看|仅看|也看|資料|资料|數據|数据|結果|结果|受訪者|受访者|樣本|样本|請|请|幫我|帮我|我要|我想|想看|看看|查看|那|呢|再|並且|并且|以及|和|與|与|或|的|一下)/gu,
+      /(?:增加|新增|加入|加上|再加|刪除|删除|移除|排除|不要|改看|改成|換成|换成|切換|切换|只看|僅看|仅看|也看|資料|资料|數據|数据|結果|结果|受訪者|受访者|樣本|样本|請|请|幫我|帮我|我要|我想|想看|看看|查看|那麼|那么|至於|至于|那|呢|再|並且|并且|以及|和|與|与|或|的|一下)/gu,
       " ",
     )
     .replace(/[^\p{L}\p{N}.]+/gu, " ")
@@ -1614,6 +1626,184 @@ function operationalOnly(message: string): boolean {
     waves.values.length > 0 ||
     waves.all;
   return hasOperation && operationalRemainder(message).length === 0;
+}
+
+function hasFixedQuestionGeography(context: CloudTurnContext): boolean {
+  const questionText = context.current_goal?.question_text ?? "";
+  if (FIXED_QUESTION_GEOGRAPHY_PATTERNS.some((pattern) => pattern.test(questionText))) {
+    return true;
+  }
+  return (context.current_goal?.category_options ?? []).some((label) =>
+    FIXED_QUESTION_GEOGRAPHY_PATTERNS.some((pattern) => pattern.test(label))
+  );
+}
+
+function hasExplicitRespondentScopeMarker(message: string): boolean {
+  return /(?:\brespondents?\b|\brespondent\s+(?:countries|regions|places)\b|\bsurvey\s+sample\b|\bsample\s+(?:from|in)\b|受訪(?:者|地區)|受访(?:者|地区)|樣本|样本)/iu.test(
+    message,
+  );
+}
+
+function guardAmbiguousCountryProgram(
+  state: ConversationState,
+  context: CloudTurnContext,
+  message: string,
+  program: TurnProgram,
+): TurnProgram {
+  if (
+    state.activeSnapshot === null
+    || context.pending !== null
+    || context.current_goal?.question_id == null
+    || !program.commands.some((command) => command.kind === "modify_countries")
+    || !operationalOnly(message)
+    || hasExplicitRespondentScopeMarker(message)
+    || !hasFixedQuestionGeography(context)
+  ) {
+    return program;
+  }
+  return {
+    schema_version: 1,
+    relation: "unclear",
+    commands: [],
+    unresolved: [{
+      slot: "country_role",
+      detail: "這個國家名稱可能是受訪地區，也可能是題目中的評價對象或回答類別；請明確說明是否要修改受訪地區",
+    }],
+    source: "model",
+  };
+}
+
+function forceExplicitRespondentCountryProgram(
+  state: ConversationState,
+  context: CloudTurnContext,
+  message: string,
+  program: TurnProgram,
+): TurnProgram {
+  const countries = parseCountries(message);
+  if (
+    state.activeSnapshot === null
+    || context.pending !== null
+    || context.current_goal?.question_id == null
+    || !hasExplicitRespondentScopeMarker(message)
+    || countries.all
+    || countries.unsupported !== null
+    || countries.values.length === 0
+  ) {
+    return program;
+  }
+  return {
+    schema_version: 1,
+    relation: "revise",
+    commands: [{
+      kind: "modify_countries",
+      operation: countries.operation,
+      values: countries.values
+        .map((code) => COUNTRY_NAMES.get(code))
+        .filter((name): name is string => Boolean(name)),
+      selector: "explicit",
+    }],
+    unresolved: [],
+    source: "model",
+  };
+}
+
+function safeCountryContinuationFallback(
+  state: ConversationState,
+  context: CloudTurnContext,
+  message: string,
+  program: TurnProgram,
+): TurnProgram {
+  const countries = parseCountries(message);
+  if (
+    state.activeSnapshot === null
+    || context.pending !== null
+    || context.current_goal?.question_id == null
+    || program.relation !== "unclear"
+    || program.commands.length > 0
+    || countries.all
+    || countries.unsupported !== null
+    || countries.values.length === 0
+    || !operationalOnly(message)
+    || hasFixedQuestionGeography(context)
+  ) {
+    return program;
+  }
+  return {
+    schema_version: 1,
+    relation: "revise",
+    commands: [{
+      kind: "modify_countries",
+      operation: countries.operation,
+      values: countries.values
+        .map((code) => COUNTRY_NAMES.get(code))
+        .filter((name): name is string => Boolean(name)),
+      selector: "explicit",
+    }],
+    unresolved: [],
+    source: "model",
+  };
+}
+
+async function safeTopicContinuationFallback(
+  state: ConversationState,
+  context: CloudTurnContext,
+  message: string,
+  program: TurnProgram,
+  data: Bootstrap,
+): Promise<ConversationResponse | null> {
+  const hasQuestionCommand = program.commands.some((command) =>
+    command.kind === "search_questions" || command.kind === "select_question"
+  );
+  const hasNonModifierCommand = program.commands.some((command) =>
+    ![
+      "modify_countries",
+      "modify_waves",
+      "modify_categories",
+      "set_statistic",
+      "set_representation",
+    ].includes(command.kind)
+  );
+  if (
+    state.activeSnapshot === null
+    || context.pending !== null
+    || context.current_goal?.question_id == null
+    || hasQuestionCommand
+    || hasNonModifierCommand
+    || operationalOnly(message)
+    || hasExplicitRespondentScopeMarker(message)
+  ) {
+    return null;
+  }
+  const matches = (await catalogSearch(message)).questions;
+  const hasExplicitMeasureIntent = QUESTION_MEASURE_INTENTS.some((intent) =>
+    intent.query.test(message)
+  );
+  if (
+    !hasExplicitMeasureIntent
+    && !matches.some((item) => item.match_band === "high")
+  ) return null;
+
+  const countries = parseCountries(message);
+  const waves = parseWaves(message);
+  const statistic = parseStatistic(message);
+  state.questionQuery = message;
+  state.plan = {
+    questionId: null,
+    statistic: null,
+    countries: [],
+    waves: [],
+  };
+  applyConversationModifiers(state, countries, waves, statistic, data);
+  setPending(
+    state,
+    "question",
+    "請選擇最符合需求的調查題目。",
+    ["question"],
+    questionOptions(matches),
+  );
+  const reply = "這個說法可能對應不同的測量。請選擇題目：";
+  addTurn(state, "assistant", reply);
+  return publicConversation(state, "needs_clarification", "clarified", reply);
 }
 
 function applyConversationModifiers(
@@ -2055,11 +2245,52 @@ async function sendConversationMessage(
   if (canRequestCloudTurnProgram()) {
     const data = await bootstrap();
     const context = await cloudTurnContext(state, trimmed, data);
+    const explicitRespondentProgram = forceExplicitRespondentCountryProgram(
+      state,
+      context,
+      trimmed,
+      {
+        schema_version: 1,
+        relation: "unclear",
+        commands: [],
+        unresolved: [],
+        source: "model",
+      },
+    );
+    if (explicitRespondentProgram.commands.length > 0) {
+      return applyCloudTurnProgram(state, explicitRespondentProgram, data);
+    }
     const program = await requestCloudTurnProgram(context);
     if (!program) return cloudProgramFailure(state);
+    const guardedProgram = guardAmbiguousCountryProgram(
+      state,
+      context,
+      trimmed,
+      program,
+    );
+    const respondentProgram = forceExplicitRespondentCountryProgram(
+      state,
+      context,
+      trimmed,
+      guardedProgram,
+    );
+    const effectiveProgram = safeCountryContinuationFallback(
+      state,
+      context,
+      trimmed,
+      respondentProgram,
+    );
+    const topicFallback = await safeTopicContinuationFallback(
+      state,
+      context,
+      trimmed,
+      effectiveProgram,
+      data,
+    );
+    if (topicFallback) return topicFallback;
     return applyCloudTurnProgram(
       state,
-      supplementSearchScope(program, trimmed),
+      supplementSearchScope(effectiveProgram, trimmed),
       data,
     );
   }

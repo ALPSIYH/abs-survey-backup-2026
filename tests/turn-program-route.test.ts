@@ -44,7 +44,7 @@ test("turn-program validator accepts grounded edits and rejects invented values"
     unresolved: [],
     source: "model",
   }, input));
-  assert.equal(validateTurnProgram({
+  const invented = validateTurnProgram({
     schema_version: 1,
     relation: "revise",
     commands: [{
@@ -55,7 +55,10 @@ test("turn-program validator accepts grounded edits and rejects invented values"
     }],
     unresolved: [],
     source: "model",
-  }, input), null);
+  }, input);
+  assert.equal(invented?.relation, "unclear");
+  assert.deepEqual(invented?.commands, []);
+  assert.equal(invented?.unresolved[0]?.slot, "country_role");
   const negated = validateTurnProgram({
     schema_version: 1,
     relation: "revise",
@@ -106,7 +109,7 @@ test("turn-program validator accepts grounded edits and rejects invented values"
     overGenerated?.commands.map((command) => command.kind),
     ["search_questions", "modify_countries"],
   );
-  assert.equal(validateTurnProgram({
+  const mismatchedSearch = validateTurnProgram({
     schema_version: 1,
     relation: "start",
     commands: [{
@@ -118,7 +121,10 @@ test("turn-program validator accepts grounded edits and rejects invented values"
     }],
     unresolved: [],
     source: "model",
-  }, input), null);
+  }, input);
+  assert.equal(mismatchedSearch?.relation, "unclear");
+  assert.deepEqual(mismatchedSearch?.commands, []);
+  assert.equal(mismatchedSearch?.unresolved[0]?.slot, "question");
 });
 
 test("cloud turn route sends bounded conversation state and returns only a validated program", async () => {
@@ -177,7 +183,11 @@ test("cloud turn route sends bounded conversation state and returns only a valid
     assert.ok(providerBody);
     const messages = providerBody!.messages as Array<{ role: string; content: string }>;
     assert.match(messages[0].content, /only edits countries, waves,[\s\S]*revises the existing question/i);
+    assert.match(messages[0].content, /bare country continuation[\s\S]*operation set/i);
+    assert.match(messages[0].content, /sole authority for this turn's edit intent/i);
     assert.match(messages[1].content, /把受訪地區縮小到日本和韓國/u);
+    assert.match(messages[1].content, /"latest_turn"/u);
+    assert.match(messages[1].content, /"context_only_recent_exchanges"/u);
     assert.equal((providerBody!.tools as unknown[]).length, 1);
   } finally {
     globalThis.fetch = originalFetch;
@@ -188,7 +198,7 @@ test("cloud turn route sends bounded conversation state and returns only a valid
   }
 });
 
-test("cloud turn route fails closed when the provider invents a respondent country", async () => {
+test("cloud turn route returns a safe unclear program when the provider invents a respondent country", async () => {
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.DEEPSEEK_API_KEY;
   process.env.DEEPSEEK_API_KEY = "test-key";
@@ -226,10 +236,122 @@ test("cloud turn route fails closed when the provider invents a respondent count
       },
       body: JSON.stringify(context()),
     }));
-    assert.equal(response.status, 502);
+    assert.equal(response.status, 200);
+    const document = await response.json();
+    assert.equal(document.program.relation, "unclear");
+    assert.deepEqual(document.program.commands, []);
+    assert.equal(document.program.unresolved[0].slot, "country_role");
   } finally {
     globalThis.fetch = originalFetch;
     if (originalKey === undefined) delete process.env.DEEPSEEK_API_KEY;
     else process.env.DEEPSEEK_API_KEY = originalKey;
   }
+});
+
+test("bare country continuation is normalized from an ungrounded add to a replacement", () => {
+  const input = context("那韓國呢？");
+  const program = validateTurnProgram({
+    schema_version: 1,
+    relation: "revise",
+    commands: [{
+      kind: "modify_countries",
+      operation: "add",
+      values: ["South Korea"],
+      selector: "explicit",
+    }],
+    unresolved: [],
+    source: "model",
+  }, input);
+  assert.equal(program?.relation, "revise");
+  assert.deepEqual(program?.commands, [{
+    kind: "modify_countries",
+    operation: "set",
+    values: ["South Korea"],
+    selector: "explicit",
+  }]);
+});
+
+test("grounded search commands recover an explicitly requested all-country scope", () => {
+  const latestMessage = "Switch to satisfaction with the way democracy works in each respondent country, across all available waves, using the response distribution.";
+  const program = validateTurnProgram({
+    schema_version: 1,
+    relation: "revise",
+    commands: [
+      {
+        kind: "search_questions",
+        purpose: "analyze",
+        query_original: latestMessage,
+        query_en: "satisfaction with the way democracy works",
+        object_entities: [],
+      },
+      {
+        kind: "modify_waves",
+        operation: "set",
+        values: [],
+        selector: "all_available",
+      },
+      { kind: "set_statistic", statistic: "distribution" },
+    ],
+    unresolved: [],
+    source: "model",
+  }, context(latestMessage));
+  assert.deepEqual(program?.commands.map((command) => command.kind), [
+    "search_questions",
+    "modify_countries",
+    "modify_waves",
+    "set_statistic",
+  ]);
+  assert.deepEqual(program?.commands[1], {
+    kind: "modify_countries",
+    operation: "set",
+    values: [],
+    selector: "all_available",
+  });
+});
+
+test("a bare country continuation can recover from provider uncertainty only for a country-placeholder measure", () => {
+  const uncertain = {
+    schema_version: 1,
+    relation: "unclear",
+    commands: [],
+    unresolved: [{ slot: "country_role", detail: "provider uncertainty" }],
+    source: "model",
+  };
+  const recovered = validateTurnProgram(uncertain, context("那韓國呢？"));
+  assert.equal(recovered?.relation, "revise");
+  assert.deepEqual(recovered?.commands, [{
+    kind: "modify_countries",
+    operation: "set",
+    values: ["South Korea"],
+    selector: "explicit",
+  }]);
+
+  const fixedQuestion = context("那韓國呢？");
+  fixedQuestion.current_goal = {
+    ...fixedQuestion.current_goal!,
+    question_id: "q178",
+    question_text: "Generally speaking, the influence China has on our country is?",
+  };
+  const stillUnclear = validateTurnProgram(uncertain, fixedQuestion);
+  assert.equal(stillUnclear?.relation, "unclear");
+  assert.deepEqual(stillUnclear?.commands, []);
+
+  const historyContaminated = validateTurnProgram({
+    schema_version: 1,
+    relation: "revise",
+    commands: [{
+      kind: "modify_countries",
+      operation: "set",
+      values: ["Japan", "South Korea"],
+      selector: "explicit",
+    }],
+    unresolved: [],
+    source: "model",
+  }, context("那韓國呢？"));
+  assert.deepEqual(historyContaminated?.commands, [{
+    kind: "modify_countries",
+    operation: "set",
+    values: ["South Korea"],
+    selector: "explicit",
+  }]);
 });
