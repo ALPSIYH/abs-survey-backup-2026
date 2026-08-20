@@ -69,9 +69,12 @@ const UNRESOLVED_SLOTS = new Set([
   "statistic",
   "other",
 ]);
-const EXPLICIT_NEGATION = /(?:\b(?:do\s+not|don't|dont|never|not)\b|不要|不用|不必|先別|先别|別|别|不可|不能|勿)/iu;
-const ADD_EVIDENCE = /(?:\b(?:add|also|include|plus)\b|再|也|還要|还要|加入|加上|納入|纳入|新增|增加)/iu;
-const REMOVE_EVIDENCE = /(?:\b(?:remove|exclude|drop|without|except)\b|刪除|删除|移除|排除|不要|剔除)/iu;
+const ADD_EVIDENCE = /(?:\b(?:add|also|include|plus|alongside|together|besides|additionally)\b|\bas\s+well\b|\bin\s+addition\b|再|也|還要|还要|還有|还有|加入|加上|納入|纳入|新增|增加|順便|顺便|一併|一并|一起|一塊|一块|連同|连同|另外|除此之外|帶上|带上|補進|补进|放進來|放进来)/iu;
+const REMOVE_EVIDENCE = /(?:\b(?:remove|exclude|drop|without|except|omit|discard)\b|\bleave\s+(?:[\p{L}\p{N}\s-]+\s+)?out\b|刪除|删除|移除|排除|不要|剔除|拿掉|去掉|不看|別算|别算|不算|不用算|不納入|不纳入)/iu;
+const SET_EVIDENCE = /(?:\b(?:set|replace|switch|change|instead|only|focus|limit|restrict|use)\b|改成|改為|改为|改查|換成|换成|換到|换到|只看|僅看|仅看|限定|設為|设为|設定為|设置为|視角移到|视角移到|給我|给我)/iu;
+const NEGATED_OPERATION_EVIDENCE = /(?:\b(?:do\s+not|don't|dont|never|not)\b|不要|先別|先别|別|别|勿).{0,24}(?:\b(?:add|include|remove|exclude|drop|change|switch|set)\b|加入|加上|納入|纳入|新增|增加|移除|刪除|删除|排除|改成|換成|换成|設為|设为)/iu;
+const COUNTRY_CHOICE_EVIDENCE = /(?:\b(?:or|versus|vs\.?)\b|還是|还是|或者|或是|哪(?:一)?個|哪(?:一)?个)/iu;
+const RESPONDENT_SCOPE_EVIDENCE = /(?:\brespondents?\b|\brespondent\s+(?:sample|scope|countries|regions|places)\b|\bsurvey\s+sample\b|\bsample\b|受訪(?:者|地區)|受访(?:者|地区)|樣本|样本)/iu;
 const ALL_COUNTRY_EVIDENCE = /(?:\b(?:all|every|each)\s+(?:available\s+)?(?:respondent\s+)?(?:country|countries|region|regions|place|places)\b|全部(?:國家|国家|地區|地区)|所有(?:國家|国家|地區|地区)|每(?:個|个)(?:國家|国家|地區|地区)|各國|各国|各地區|各地区)/iu;
 const ALL_WAVE_EVIDENCE = /(?:\b(?:all|every|each)\s+(?:available\s+)?waves?\b|\bacross\s+(?:all\s+)?(?:available\s+)?waves?\b|\bby\s+waves?\b|各波|歷次|历次|全部(?:可用)?波次|所有(?:可用)?波次)/iu;
 const COUNTRY_EVIDENCE: Record<string, RegExp> = {
@@ -156,6 +159,7 @@ function commandGrounded(
     if (!(command.values ?? []).every((country) => COUNTRY_EVIDENCE[country]?.test(message))) return false;
     if (command.operation === "add") return ADD_EVIDENCE.test(message);
     if (command.operation === "remove") return REMOVE_EVIDENCE.test(message);
+    if (REMOVE_EVIDENCE.test(message) && !SET_EVIDENCE.test(message)) return false;
     return true;
   }
   if (command.kind === "modify_waves") return waveCommandGrounded(command, message);
@@ -206,61 +210,6 @@ function invalidCommandSlot(value: unknown): TurnProgramUnresolvedReference["slo
     return "question";
   }
   return "other";
-}
-
-function normalizeCountryOperation(
-  command: ConversationCommand,
-  context: CloudTurnContext,
-): ConversationCommand {
-  if (
-    command.kind === "modify_countries"
-    && command.operation === "add"
-    && command.selector === "explicit"
-    && !ADD_EVIDENCE.test(context.latest_message)
-    && !REMOVE_EVIDENCE.test(context.latest_message)
-  ) {
-    return { ...command, operation: "set" };
-  }
-  return command;
-}
-
-function recoverBareCountryContinuation(
-  context: CloudTurnContext,
-): TurnProgram | null {
-  const questionText = context.current_goal?.question_text ?? "";
-  if (
-    !/\[country\]/iu.test(questionText)
-    || ADD_EVIDENCE.test(context.latest_message)
-    || REMOVE_EVIDENCE.test(context.latest_message)
-    || ALL_COUNTRY_EVIDENCE.test(context.latest_message)
-  ) return null;
-  const countries = Object.entries(COUNTRY_EVIDENCE)
-    .filter(([, evidence]) => evidence.test(context.latest_message))
-    .map(([country]) => country);
-  if (countries.length === 0) return null;
-  let remainder = context.latest_message.normalize("NFKC").toLowerCase();
-  for (const country of countries) {
-    remainder = remainder.replace(COUNTRY_EVIDENCE[country], " ");
-  }
-  remainder = remainder
-    .replace(/\b(?:what|how)\s+about\b/giu, " ")
-    .replace(/\b(?:and|then|only|just|show|view|the|data|results?|respondents?|sample|please)\b/giu, " ")
-    .replace(/(?:那麼|那么|那|至於|至于|只看|僅看|仅看|看看|查看|資料|资料|數據|数据|結果|结果|受訪者|受访者|樣本|样本|請|请|呢|咧|呀|啊|的)/gu, " ")
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .trim();
-  if (remainder) return null;
-  return {
-    schema_version: 1,
-    relation: "revise",
-    commands: [{
-      kind: "modify_countries",
-      operation: "set",
-      values: countries,
-      selector: "explicit",
-    }],
-    unresolved: [],
-    source: "model",
-  };
 }
 
 function completeGroundedSearchCommands(
@@ -523,17 +472,8 @@ export function validateTurnProgram(
   if (unresolved.some((reference) => !reference)) {
     return failClosedProgram("other", "The provider returned an invalid unresolved reference.");
   }
-  const normalizedCommands = (commands as ConversationCommand[]).map((command) =>
-    normalizeCountryOperation(command, context)
-  );
+  const normalizedCommands = commands as ConversationCommand[];
   const relation = item.relation as TurnProgram["relation"];
-  if (
-    normalizedCommands.length === 0
-    && ["revise", "unclear"].includes(relation)
-  ) {
-    const recoveredCountry = recoverBareCountryContinuation(context);
-    if (recoveredCountry) return recoveredCountry;
-  }
   if (normalizedCommands.length > 0 && unresolved.length > 0) return null;
   if (normalizedCommands.length === 0 && !["discuss", "unclear"].includes(relation)) return null;
   const repairs = normalizedCommands.filter((command) => command.kind === "repair");
@@ -553,8 +493,36 @@ export function validateTurnProgram(
       || relation !== "answer_pending"
     )
   ) return null;
+  const countryCommands = normalizedCommands.filter((command) =>
+    command.kind === "modify_countries"
+  );
+  const mentionedCountries = Object.values(COUNTRY_EVIDENCE).filter((evidence) =>
+    evidence.test(context.latest_message)
+  ).length;
   if (
-    EXPLICIT_NEGATION.test(context.latest_message)
+    countryCommands.length > 0
+    && COUNTRY_CHOICE_EVIDENCE.test(context.latest_message)
+    && mentionedCountries > 1
+  ) {
+    return failClosedProgram(
+      "country_role",
+      "The message presents multiple country alternatives without choosing a respondent scope.",
+    );
+  }
+  if (
+    countryCommands.length > 0
+    && context.current_goal?.question_text
+    && !/\[country\]/iu.test(context.current_goal.question_text)
+    && !RESPONDENT_SCOPE_EVIDENCE.test(context.latest_message)
+    && !normalizedCommands.some((command) => command.kind === "search_questions")
+  ) {
+    return failClosedProgram(
+      "country_role",
+      "The country may be an attitude target rather than respondent geography; specify the respondent sample.",
+    );
+  }
+  if (
+    NEGATED_OPERATION_EVIDENCE.test(context.latest_message)
     && normalizedCommands.some((command) =>
       command
       && !["discuss_result", "social"].includes(command.kind),
@@ -586,8 +554,6 @@ export function validateTurnProgram(
     context,
   );
   if (groundedCommands.length === 0 && normalizedCommands.length > 0) {
-    const recoveredCountry = recoverBareCountryContinuation(context);
-    if (recoveredCountry) return recoveredCountry;
     return {
       schema_version: 1,
       relation: "unclear",

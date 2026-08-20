@@ -183,7 +183,8 @@ test("cloud turn route sends bounded conversation state and returns only a valid
     assert.ok(providerBody);
     const messages = providerBody!.messages as Array<{ role: string; content: string }>;
     assert.match(messages[0].content, /only edits countries, waves,[\s\S]*revises the existing question/i);
-    assert.match(messages[0].content, /bare country continuation[\s\S]*operation set/i);
+    assert.match(messages[0].content, /do not assign every short country follow-up one fixed operation/i);
+    assert.match(messages[0].content, /together, alongside, as well, besides/i);
     assert.match(messages[0].content, /sole authority for this turn's edit intent/i);
     assert.match(messages[1].content, /把受訪地區縮小到日本和韓國/u);
     assert.match(messages[1].content, /"latest_turn"/u);
@@ -248,7 +249,7 @@ test("cloud turn route returns a safe unclear program when the provider invents 
   }
 });
 
-test("bare country continuation is normalized from an ungrounded add to a replacement", () => {
+test("validator does not rewrite an ungrounded country operation into a different intent", () => {
   const input = context("那韓國呢？");
   const program = validateTurnProgram({
     schema_version: 1,
@@ -262,13 +263,8 @@ test("bare country continuation is normalized from an ungrounded add to a replac
     unresolved: [],
     source: "model",
   }, input);
-  assert.equal(program?.relation, "revise");
-  assert.deepEqual(program?.commands, [{
-    kind: "modify_countries",
-    operation: "set",
-    values: ["South Korea"],
-    selector: "explicit",
-  }]);
+  assert.equal(program?.relation, "unclear");
+  assert.deepEqual(program?.commands, []);
 });
 
 test("grounded search commands recover an explicitly requested all-country scope", () => {
@@ -309,7 +305,7 @@ test("grounded search commands recover an explicitly requested all-country scope
   });
 });
 
-test("a bare country continuation can recover from provider uncertainty only for a country-placeholder measure", () => {
+test("provider uncertainty is preserved instead of being replaced by a phrase-specific country guess", () => {
   const uncertain = {
     schema_version: 1,
     relation: "unclear",
@@ -318,13 +314,8 @@ test("a bare country continuation can recover from provider uncertainty only for
     source: "model",
   };
   const recovered = validateTurnProgram(uncertain, context("那韓國呢？"));
-  assert.equal(recovered?.relation, "revise");
-  assert.deepEqual(recovered?.commands, [{
-    kind: "modify_countries",
-    operation: "set",
-    values: ["South Korea"],
-    selector: "explicit",
-  }]);
+  assert.equal(recovered?.relation, "unclear");
+  assert.deepEqual(recovered?.commands, []);
 
   const fixedQuestion = context("那韓國呢？");
   fixedQuestion.current_goal = {
@@ -348,10 +339,178 @@ test("a bare country continuation can recover from provider uncertainty only for
     unresolved: [],
     source: "model",
   }, context("那韓國呢？"));
-  assert.deepEqual(historyContaminated?.commands, [{
-    kind: "modify_countries",
-    operation: "set",
-    values: ["South Korea"],
-    selector: "explicit",
-  }]);
+  assert.equal(historyContaminated?.relation, "unclear");
+  assert.deepEqual(historyContaminated?.commands, []);
+});
+
+test("country operations support broad semantics without copying or flattening the operation", () => {
+  const cases = [
+    ["連韓國一起看。", "add"],
+    ["Show South Korea alongside Japan.", "add"],
+    ["韓國先拿掉。", "remove"],
+    ["Leave Korea out of the respondent scope.", "remove"],
+  ] as const;
+  for (const [message, operation] of cases) {
+    const program = validateTurnProgram({
+      schema_version: 1,
+      relation: "revise",
+      commands: [{
+        kind: "modify_countries",
+        operation,
+        values: ["South Korea"],
+        selector: "explicit",
+      }],
+      unresolved: [],
+      source: "model",
+    }, context(message));
+    assert.equal(program?.relation, "revise", message);
+    assert.equal(program?.commands[0]?.kind, "modify_countries", message);
+    if (program?.commands[0]?.kind === "modify_countries") {
+      assert.equal(program.commands[0].operation, operation, message);
+    }
+  }
+});
+
+test("country alternatives and fixed-question country roles fail closed", () => {
+  const choice = validateTurnProgram({
+    schema_version: 1,
+    relation: "revise",
+    commands: [{
+      kind: "modify_countries",
+      operation: "set",
+      values: ["South Korea", "Japan"],
+      selector: "explicit",
+    }],
+    unresolved: [],
+    source: "model",
+  }, context("韓國還是日本？"));
+  assert.equal(choice?.relation, "unclear");
+  assert.equal(choice?.unresolved[0]?.slot, "country_role");
+
+  const fixed = context("韓國的結果呢？");
+  fixed.current_goal = {
+    ...fixed.current_goal!,
+    question_id: "q178",
+    question_text: "Generally speaking, the influence China has on our country is?",
+  };
+  const fixedProgram = validateTurnProgram({
+    schema_version: 1,
+    relation: "revise",
+    commands: [{
+      kind: "modify_countries",
+      operation: "set",
+      values: ["South Korea"],
+      selector: "explicit",
+    }],
+    unresolved: [],
+    source: "model",
+  }, fixed);
+  assert.equal(fixedProgram?.relation, "unclear");
+  assert.equal(fixedProgram?.unresolved[0]?.slot, "country_role");
+});
+
+test("a keep-one-remove-another sentence cannot be flattened into a destructive set", () => {
+  const program = validateTurnProgram({
+    schema_version: 1,
+    relation: "revise",
+    commands: [{
+      kind: "modify_countries",
+      operation: "set",
+      values: ["Japan"],
+      selector: "explicit",
+    }],
+    unresolved: [],
+    source: "model",
+  }, context("日本留下，韓國去掉。"));
+  assert.equal(program?.relation, "unclear");
+  assert.deepEqual(program?.commands, []);
+});
+
+test("route retries a locally ungrounded country operation with semantic repair guidance", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = "test-key";
+  let calls = 0;
+  globalThis.fetch = async (_input, init) => {
+    calls += 1;
+    const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+    if (calls === 2) {
+      assert.ok(body.messages.some((message) => /prior attempt failed local semantic grounding/i.test(message.content)));
+    }
+    const operation = calls === 1 ? "add" : "set";
+    return Response.json({
+      choices: [{
+        finish_reason: "tool_calls",
+        message: {
+          tool_calls: [{
+            function: {
+              name: "record_turn_program",
+              arguments: JSON.stringify({
+                schema_version: 1,
+                relation: "revise",
+                commands: [{
+                  kind: "modify_countries",
+                  operation,
+                  values: ["South Korea"],
+                  selector: "explicit",
+                }],
+                unresolved: [],
+                source: "model",
+              }),
+            },
+          }],
+        },
+      }],
+    });
+  };
+  try {
+    const { POST } = await import("../app/api/turn-program/route");
+    const response = await POST(new NextRequest("http://localhost/api/turn-program", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-forwarded-for": "198.51.100.44",
+      },
+      body: JSON.stringify(context("至於韓國？")),
+    }));
+    assert.equal(response.status, 200);
+    const document = await response.json();
+    assert.equal(calls, 2);
+    assert.equal(document.program.commands[0].operation, "set");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalKey;
+  }
+});
+
+test("route preserves state for an explicitly denied operation without calling the provider", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = "test-key";
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    throw new Error("provider should not be called");
+  };
+  try {
+    const { POST } = await import("../app/api/turn-program/route");
+    const response = await POST(new NextRequest("http://localhost/api/turn-program", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-forwarded-for": "198.51.100.45",
+      },
+      body: JSON.stringify(context("不要移除韓國。")),
+    }));
+    assert.equal(response.status, 200);
+    const document = await response.json();
+    assert.equal(called, false);
+    assert.equal(document.program.relation, "unclear");
+    assert.deepEqual(document.program.commands, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = originalKey;
+  }
 });

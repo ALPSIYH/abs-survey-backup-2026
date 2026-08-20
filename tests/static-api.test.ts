@@ -777,17 +777,17 @@ test("model-routed scope edits preserve the active question and statistic across
   }
 });
 
-test("grounded country ellipsis survives an unclear cloud program without losing analysis state", async () => {
-  const prompts: Array<[string, number]> = [
-    ["那韩国呢？", 3],
-    ["那大陸呢？", 4],
-    ["韓國呢？", 3],
-    ["那么台湾？", 7],
-    ["至于香港呢？", 2],
-    ["what about South Korea?", 3],
-    ["how about Mainland China?", 4],
+test("an uncertain country ellipsis preserves state instead of invoking a phrase-specific guess", async () => {
+  const prompts = [
+    "那韩国呢？",
+    "那大陸呢？",
+    "韓國呢？",
+    "那么台湾？",
+    "至于香港呢？",
+    "what about South Korea?",
+    "how about Mainland China?",
   ];
-  for (const [prompt, expectedCountry] of prompts) {
+  for (const prompt of prompts) {
     const conversation = await api.createConversation();
     const initial = await api.sendConversationMessage(
       conversation.conversation_id,
@@ -808,11 +808,11 @@ test("grounded country ellipsis survives an unclear cloud program without losing
         prompt,
         initial.revision,
       );
-      assert.equal(revised.status, "answered", prompt);
+      assert.equal(revised.status, "needs_clarification", prompt);
       assert.equal(revised.active_snapshot?.view.question_id, "q96", prompt);
       assert.equal(revised.active_snapshot?.view.statistic, "mean", prompt);
       assert.deepEqual(revised.active_snapshot?.draft.waves, [1, 2, 3, 4, 5, 6], prompt);
-      assert.deepEqual(revised.active_snapshot?.draft.countries, [expectedCountry], prompt);
+      assert.deepEqual(revised.active_snapshot?.draft.countries, [1], prompt);
     } finally {
       setCloudTurnProgramResolverForTests(null);
     }

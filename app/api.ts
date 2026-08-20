@@ -1063,10 +1063,10 @@ function parseCountries(message: string): {
   const values = COUNTRY_ALIASES.filter(([, pattern]) => pattern.test(normalized)).map(
     ([code]) => code,
   );
-  const remove = /(?:remove|exclude|drop|without|刪除|删除|移除|排除|不要)/iu.test(
+  const remove = /(?:\b(?:remove|exclude|drop|without|omit|discard)\b|\bleave\s+(?:[\p{L}\p{N}\s-]+\s+)?out\b|刪除|删除|移除|排除|不要|拿掉|去掉|不看|別算|别算|不算|不用算|不納入|不纳入)/iu.test(
     normalized,
   );
-  const add = /(?:add|include|plus|also|增加|新增|加入|加上|也看|再加)/iu.test(
+  const add = /(?:\b(?:add|include|plus|also|alongside|together|besides|additionally)\b|\bas\s+well\b|\bin\s+addition\b|增加|新增|加入|加上|也看|再加|順便|顺便|一併|一并|一起|一塊|一块|連同|连同|另外|除此之外|帶上|带上|補進|补进|放進來|放进来)/iu.test(
     normalized,
   );
   const all = ALL_COUNTRIES_PATTERN.test(normalized);
@@ -1605,11 +1605,11 @@ function operationalRemainder(message: string): string {
       " ",
     )
     .replace(
-      /\b(?:add|include|remove|exclude|drop|without|plus|also|switch|change|set|only|just|instead|show|view|use|data|results?|respondents?|samples?|please|then|and|or|to|from|for|in)\b/giu,
+      /\b(?:add|include|remove|exclude|drop|without|plus|also|alongside|together|besides|additionally|keep|retain|leave|out|omit|discard|switch|change|set|only|just|instead|show|view|use|focus|limit|restrict|data|results?|respondents?|samples?|please|then|and|or|to|from|for|in)\b/giu,
       " ",
     )
     .replace(
-      /(?:增加|新增|加入|加上|再加|刪除|删除|移除|排除|不要|改看|改成|換成|换成|切換|切换|只看|僅看|仅看|也看|資料|资料|數據|数据|結果|结果|受訪者|受访者|樣本|样本|請|请|幫我|帮我|我要|我想|想看|看看|查看|那麼|那么|至於|至于|那|呢|再|並且|并且|以及|和|與|与|或|的|一下)/gu,
+      /(?:增加|新增|加入|加上|再加|順便|顺便|一併|一并|一起|一塊|一块|連同|连同|另外|除此之外|帶上|带上|補進|补进|放進來|放进来|刪除|删除|移除|排除|不要|拿掉|去掉|不看|別算|别算|不算|不用算|不納入|不纳入|保留|維持|维持|現有範圍|现有范围|別動|别动|留下|改看|改成|改為|改为|換成|换成|換到|换到|切換|切换|只看|僅看|仅看|也看|限定|設為|设为|視角移到|视角移到|資料|资料|數據|数据|結果|结果|受訪者|受访者|受訪地區|受访地区|樣本|样本|請|请|幫我|帮我|給我|给我|我要|我想|想看|看看|查看|那麼|那么|至於|至于|那|呢|再|先|並且|并且|以及|和|與|与|或|的|一下)/gu,
       " ",
     )
     .replace(/[^\p{L}\p{N}.]+/gu, " ")
@@ -1642,6 +1642,22 @@ function hasExplicitRespondentScopeMarker(message: string): boolean {
   return /(?:\brespondents?\b|\brespondent\s+(?:countries|regions|places)\b|\bsurvey\s+sample\b|\bsample\s+(?:from|in)\b|受訪(?:者|地區)|受访(?:者|地区)|樣本|样本)/iu.test(
     message,
   );
+}
+
+function explicitCountryOperation(
+  message: string,
+): "set" | "add" | "remove" | null {
+  const normalized = message.normalize("NFKC");
+  const negatedOperation = /(?:\b(?:do\s+not|don't|dont|never|not)\b|不要|先別|先别|別|别|勿).{0,24}(?:\b(?:add|include|remove|exclude|drop|change|switch|set)\b|加入|加上|納入|纳入|新增|增加|移除|刪除|删除|排除|改成|換成|换成|設為|设为)/iu.test(normalized);
+  if (negatedOperation) return null;
+  const parsed = parseCountries(normalized);
+  const set = /(?:\b(?:set|replace|switch|change|instead|only|focus|limit|restrict|use)\b|改成|改為|改为|改查|換成|换成|換到|换到|只看|僅看|仅看|限定|設為|设为|設定為|设置为|視角移到|视角移到|給我|给我)/iu.test(normalized);
+  const operations = [
+    parsed.operation === "add" ? "add" : null,
+    parsed.operation === "remove" ? "remove" : null,
+    set ? "set" : null,
+  ].filter((operation): operation is "set" | "add" | "remove" => operation !== null);
+  return new Set(operations).size === 1 ? operations[0] : null;
 }
 
 function guardAmbiguousCountryProgram(
@@ -1680,6 +1696,7 @@ function forceExplicitRespondentCountryProgram(
   program: TurnProgram,
 ): TurnProgram {
   const countries = parseCountries(message);
+  const operation = explicitCountryOperation(message);
   if (
     state.activeSnapshot === null
     || context.pending !== null
@@ -1688,6 +1705,8 @@ function forceExplicitRespondentCountryProgram(
     || countries.all
     || countries.unsupported !== null
     || countries.values.length === 0
+    || operation === null
+    || (operation === "remove" && countries.values.length !== 1)
   ) {
     return program;
   }
@@ -1696,7 +1715,7 @@ function forceExplicitRespondentCountryProgram(
     relation: "revise",
     commands: [{
       kind: "modify_countries",
-      operation: countries.operation,
+      operation,
       values: countries.values
         .map((code) => COUNTRY_NAMES.get(code))
         .filter((name): name is string => Boolean(name)),
@@ -1714,6 +1733,7 @@ function safeCountryContinuationFallback(
   program: TurnProgram,
 ): TurnProgram {
   const countries = parseCountries(message);
+  const operation = explicitCountryOperation(message);
   if (
     state.activeSnapshot === null
     || context.pending !== null
@@ -1723,6 +1743,8 @@ function safeCountryContinuationFallback(
     || countries.all
     || countries.unsupported !== null
     || countries.values.length === 0
+    || operation === null
+    || (operation === "remove" && countries.values.length !== 1)
     || !operationalOnly(message)
     || hasFixedQuestionGeography(context)
   ) {
@@ -1733,7 +1755,7 @@ function safeCountryContinuationFallback(
     relation: "revise",
     commands: [{
       kind: "modify_countries",
-      operation: countries.operation,
+      operation,
       values: countries.values
         .map((code) => COUNTRY_NAMES.get(code))
         .filter((name): name is string => Boolean(name)),

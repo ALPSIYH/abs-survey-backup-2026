@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import type { CloudTurnContext } from "../../types";
+import type { CloudTurnContext, TurnProgram } from "../../types";
 import {
   CANONICAL_RESPONDENT_COUNTRIES,
   validateTurnProgram,
@@ -47,11 +47,20 @@ Decision rules, in order:
    merely being rated or discussed. Use only canonical respondent-country names
    supplied below. All respondent countries uses selector all_available and an
    empty values list.
-   A bare country continuation such as "那韓國呢？", "那韩国呢？", or
-   "What about South Korea?" replaces respondent scope, so use operation set.
-   Use operation add only when latest_message itself explicitly says add, also,
-   include, plus, 再、也、還要、还要、加入、加上、納入、纳入、增加 or
-   equivalent. Do not infer add from a country that appeared in recent history.
+   Do not assign every short country follow-up one fixed operation. Infer the
+   operation from its full meaning in the current analysis: a refocus or
+   counterfactual request for the same analysis in another respondent place is
+   set; keeping the current places while bringing another place into the same
+   result is add; leaving a place out is remove. Colloquial cues such as
+   together, alongside, as well, besides, 順便、一起、一併、連同、另外 and
+   their equivalents are additive even when the word "add" is absent. If a
+   short utterance can still reasonably mean either replace or add, or presents
+   alternatives such as "Korea or Japan?", fail closed as unclear instead of
+   choosing a scope. In a construction that keeps one place and removes a
+   different place, emit remove only for the removed place; "keep Japan" does
+   not mean set Japan unless the user explicitly says it is the only remaining
+   scope. A statement that explicitly denies intending a scope edit is unclear
+   with no commands. Do not copy the operation from recent history.
    When an own-country or [country] measure is requested for a named geography
    and no separate attitude target is stated, that geography is respondent
    scope. object_entities is only for a separately rated or discussed target;
@@ -91,6 +100,14 @@ Examples of the general contract:
 - "Keep the question and replace the sample with Japan and South Korea"
   -> revise with one set-country command; never search_questions.
 - "Also include Taiwan" -> revise with an add-country command.
+- After a Japan-only result, "How does the Korean sample look?"
+  -> revise with set South Korea because it refocuses the same analysis.
+- "Show South Korea alongside Japan" -> revise with add South Korea.
+- "Leave South Korea out" -> revise with remove South Korea.
+- "Keep Japan; leave South Korea out" -> remove South Korea, not set Japan.
+- "South Korea or Japan?" -> unclear; do not choose for the user.
+- "Mentioning South Korea was not a request to change the sample" -> unclear
+  with no commands.
 - Current q96 extent of democracy; "Switch to satisfaction with the way
   democracy works in every country, all waves, response distribution"
   -> revise with search_questions, all_available countries, all_available
@@ -430,7 +447,37 @@ function sanitizeContext(value: unknown): CloudTurnContext | null {
   };
 }
 
-async function callDeepSeek(apiKey: string, context: CloudTurnContext): Promise<unknown> {
+function deniedStateEdit(context: CloudTurnContext): TurnProgram | null {
+  const message = context.latest_message.normalize("NFKC");
+  const deniesNamedOperation = /(?:\b(?:do\s+not|don't|dont|never)\b|不要|先別|先别|別|别|勿).{0,28}(?:\b(?:add|include|remove|exclude|drop|change|switch|set)\b|加入|加上|納入|纳入|新增|增加|移除|刪除|删除|排除|改成|換成|换成|設為|设为)/iu.test(message);
+  const deniesEditIntent = /(?:\b(?:was|is)\s+not\s+(?:a\s+)?(?:request|instruction)\b.{0,32}\b(?:change|edit|modify)\b|不是(?:要|叫|讓|让).{0,28}(?:改|換|换|加|移除|刪除|删除|排除))/iu.test(message);
+  if (!deniesNamedOperation && !deniesEditIntent) return null;
+  return {
+    schema_version: 1,
+    relation: "unclear",
+    commands: [],
+    unresolved: [{
+      slot: "country_role",
+      detail: "The message denies a state edit, so the existing respondent scope was not changed.",
+    }],
+    source: "model",
+  };
+}
+
+function retryableGroundingFailure(program: TurnProgram | null): boolean {
+  if (!program) return true;
+  return program.relation === "unclear"
+    && program.commands.length === 0
+    && program.unresolved.some((item) =>
+      item.detail === "The proposed state edit was not explicitly grounded in the latest message."
+    );
+}
+
+async function callDeepSeek(
+  apiKey: string,
+  context: CloudTurnContext,
+  repairGrounding = false,
+): Promise<unknown> {
   const runtime = deepSeekRuntime();
   const providerContext = {
     latest_turn: {
@@ -454,6 +501,10 @@ async function callDeepSeek(apiKey: string, context: CloudTurnContext): Promise<
       model: runtime.model,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
+        ...(repairGrounding ? [{
+          role: "system",
+          content: "The prior attempt failed local semantic grounding. Re-read only latest_message, choose the operation from its present meaning rather than recent history, and return a fresh contract-valid program. Do not turn an additive cue into set or a refocusing cue into add. If the utterance remains genuinely ambiguous, return unclear with no commands.",
+        }] : []),
         { role: "user", content: JSON.stringify(providerContext) },
       ],
       thinking: { type: "disabled" },
@@ -514,10 +565,22 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
   if (!context) return NextResponse.json({ detail: "Invalid conversation state." }, { status: 400 });
 
+  const denied = deniedStateEdit(context);
+  if (denied) {
+    return NextResponse.json(
+      { provider: "cloud", program: denied, elapsed_ms: 0 },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
   activeRequests += 1;
   const started = Date.now();
   try {
-    const program = validateTurnProgram(await callDeepSeek(apiKey, context), context);
+    let program = validateTurnProgram(await callDeepSeek(apiKey, context), context);
+    if (retryableGroundingFailure(program)) {
+      const repaired = validateTurnProgram(await callDeepSeek(apiKey, context, true), context);
+      if (repaired) program = repaired;
+    }
     if (!program) return NextResponse.json({ detail: "Cloud language response did not pass the contract." }, { status: 502 });
     return NextResponse.json(
       { provider: "cloud", program, elapsed_ms: Date.now() - started },
